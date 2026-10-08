@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Desktop reminder while the WhatsApp live sync is broken (logged out, failing or stopped).
+# Run by wa-sync-check.service at every graphical login, and by wa-sync.service on failure/stop.
+#   wa-sync-check            check + notify if there is a problem
+#   wa-sync-check --stopped  called from ExecStopPost (uses $SERVICE_RESULT)
+set -u
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+WA_HOME="${WA_HOME:-$(dirname "$(dirname "$HERE")")}"
+v=""; [ -f "$WA_HOME/wa.conf" ] && v="$(sed -n 's/^WA_STATE=\([^ #]*\).*/\1/p' "$WA_HOME/wa.conf" | tail -1)"
+v="${WA_STATE:-${v:-state}}"
+case "$v" in /*) STATE_DIR="$v" ;; *) STATE_DIR="$WA_HOME/$v" ;; esac
+STATUS="$STATE_DIR/status.json"
+
+notify() {
+  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "/run/user/$(id -u)/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+  fi
+  [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || return 0
+  notify-send -a "WhatsApp Archive" -u critical -i dialog-warning "$1" "$2" 2>/dev/null || true
+}
+field() { python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get(sys.argv[2]) or '')" "$STATUS" "$1" 2>/dev/null; }
+write_state() {
+  python3 - "$STATUS" "$1" "$2" <<'PY'
+import json, sys, time, os
+p, st, msg = sys.argv[1:4]
+try: d = json.load(open(p))
+except Exception: d = {}
+if d.get("state") != st: d["since"] = int(time.time())
+d.update(state=st, msg=msg, last=int(time.time()))
+os.makedirs(os.path.dirname(p), exist_ok=True)
+json.dump(d, open(p + ".tmp", "w")); os.replace(p + ".tmp", p)
+PY
+}
+
+if [ "${1:-}" = "--stopped" ]; then
+  # ExecStopPost: SERVICE_RESULT=success for a clean stop
+  if [ "${SERVICE_RESULT:-success}" != "success" ]; then
+    write_state failed "service ${SERVICE_RESULT:-?} (exit ${EXIT_STATUS:-?})"
+    notify "WhatsApp Archive" "خدمة المزامنة وقفت بسبب خطأ (${SERVICE_RESULT:-?}). رح تنعاد تلقائياً؛ تفاصيل: journalctl --user -u wa-sync"
+  fi
+  exit 0
+fi
+
+# give a just-started service time to connect
+for _ in $(seq 1 12); do
+  st="$(field state)"
+  case "$st" in starting|connecting|"") sleep 5 ;; *) break ;; esac
+done
+st="$(field state)"; last="$(field last)"; msg="$(field msg)"
+active="$(systemctl --user is-active wa-sync 2>/dev/null || true)"
+now=$(date +%s)
+if [ "$st" = "connected" ] && [ -n "$last" ] && [ $((now - ${last%.*})) -gt 150 ]; then st="stale"; fi
+
+case "$st" in
+  connected) [ "$active" = "active" ] && exit 0 ;;
+esac
+case "$st" in
+  logged_out) notify "WhatsApp Archive: المزامنة متوقفة" "جهاز الأرشفة مش مربوط بواتساب. شغّل بالترمنال: wa-sync pair" ;;
+  *) notify "WhatsApp Archive: المزامنة مش شغّالة" "الحالة: ${st:-unknown} ${msg:+($msg)} · الخدمة: ${active:-?}. للتفاصيل: wa-sync status" ;;
+esac

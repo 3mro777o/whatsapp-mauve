@@ -1,0 +1,10 @@
+# allow-list: only the code goes into the image (never data, keys or sessions)
+*
+!Dockerfile
+!tools
+!docker/entrypoint.sh
+**/node_modules
+**/__pycache__
+tools/avatar-fetcher
+profiles
+compose.yml

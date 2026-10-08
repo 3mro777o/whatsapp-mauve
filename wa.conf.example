@@ -1,0 +1,45 @@
+# WhatsApp Archive configuration (KEY=VALUE, shell-compatible).
+# Copy to wa.conf and edit. Relative paths are relative to WA_HOME.
+# WA_HOME defaults to the directory containing this file.
+
+# viewer (wa-archive)
+# قفل الرمز: src/tools/wa-archive --set-pin (يلغيه --clear-pin). الرمز ما بينحفظ هون، بيتخزّن مشفّر بـ state/viewer-pin
+# WA_ACCESS: من وين بتقدر تفتح العارض
+#   local      = هالجهاز بس (http://127.0.0.1:8777)
+#   tailscale  = هالجهاز + كل أجهزتك على Tailscale (http://<اسم-الجهاز>.ts.net:8777)
+#   lan        = + الشبكة المحلية (الواي فاي) — لازم WA_PASSWORD
+WA_ACCESS=local
+WA_PASSWORD=                      # اختياري: كلمة سر لأي جهاز غير هالجهاز (المستخدم: wa)
+WA_VIEWER_AUTOSTART=0             # 1 = العارض يشتغل مع الإقلاع (مفيد مع tailscale لتفتحه من برّا)
+WA_PORT=8777
+WA_SESSION_DAYS=30                # كم يوم بيضل تسجيل الدخول للعارض محفوظ (بعد رمز القفل) قبل ما يطلب الرمز من جديد
+
+# data locations
+WA_DB=archive/archive.db          # single source of truth (SQLite, WAL)
+WA_STORE=archive/store            # media store (Media/ mirror + live downloads)
+WA_WEB=archive/web                # viewer web root (index.html, thumbs/, user/)
+WA_STATE=state                    # sync status file, logs, WhatsApp session
+WA_AUTH=state/auth                # Baileys linked-device session
+WA_PHONE_MEDIA=Media              # WhatsApp "Media" folder copied from the phone (hardlinked into the store)
+WA_BACKUPS=Databases              # folder with msgstore*.db.crypt15
+WA_KEY_FILE=.wa_key               # 64-hex backup key
+
+# live sync
+WA_MEDIA_MAX_MB=200               # auto-download limit per file; bigger files can be fetched on demand
+WA_DOWNLOAD_STATUS=1              # download status (stories) media
+WA_DEFAULT_CC=90                  # default country code for numbers starting with 0
+WA_PYTHON=python3                 # interpreter for the archive writer / enrich (needs Pillow for avatars)
+WA_SYSTEM_THEME=~/.local/state/omarchy/current/theme/colors.toml   # ألوان ثيم النظام (Omarchy) للواجهة؛ فاضي = معطّل
+
+# إرسال من العارض (الرسائل والملفات والملصقات و GIF)
+# الإرسال بيمشي عبر wa-sync على 127.0.0.1 بس، ومحمي بـ state/api-token. ومتاح بس مع رمز القفل أو WA_ACCESS=local
+WA_SYNC_PORT=8778                 # منفذ خدمة الإرسال في wa-sync (127.0.0.1 بس)
+WA_UPLOAD_MAX_MB=100              # أكبر ملف بيتم رفعه للإرسال (ميغابايت)
+WA_GIPHY_KEY=                     # مفتاح GIPHY API (اختياري). فاضي = البحث عن GIF والملصقات معطّل. المفتاح ما بيوصل للمتصفح
+WA_KLIPY_KEY=                     # مفتاح KLIPY API (اختياري، مجاني من partner.klipy.com). يضاف لنتائج GIPHY؛ لو الاثنين فاضيين = البحث معطّل
+
+# docker instance layout (wa new بيكتب هالقيم، وما لازم تلمسها بالتثبيت القديم)
+# WA_MEDIA_DIR=media                # اسم مجلد الوسائط داخل WA_STORE (الافتراضي Media)؛ بيصير بادئة المسارات بالقاعدة وبالرابط
+# WA_USER=user                      # مجلد بيانات المستخدم (الافتراضي WA_WEB/user)
+# WA_PHONE_DIR=/path/to/WhatsApp    # مجلد واتساب من التلفون: بيحدد WA_PHONE_MEDIA=<>/Media و WA_BACKUPS=<>/Databases
+# WA_TS_HTTPS=8443                  # (docker) منفذ https لـ tailscale serve على الجهاز

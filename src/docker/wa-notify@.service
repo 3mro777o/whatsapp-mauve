@@ -1,0 +1,6 @@
+[Unit]
+Description=WhatsApp Archive - link check for instance %i
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/wa notify %i

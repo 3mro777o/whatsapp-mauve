@@ -1,0 +1,25 @@
+.wa_key
+.venv/
+*.db
+*.crypt15
+archive/
+Media/
+Backups/
+Databases/
+.Shared/
+src/tools/avatar-fetcher/auth/
+src/tools/avatar-fetcher/node_modules/
+avatars-inbox/*
+!avatars-inbox/README.txt
+state/
+wa.conf
+node_modules/
+src/tools/avatar-fetcher/auth
+profiles/
+__pycache__/
+src/tools/**/__pycache__/
+
+# generated per machine by `wa regen`
+/compose.yml
+*.vcf
+*.log

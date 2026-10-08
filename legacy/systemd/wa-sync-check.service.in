@@ -1,0 +1,12 @@
+[Unit]
+Description=WhatsApp Archive — remind at login if the live sync is broken
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+Environment=WA_HOME=@WA_HOME@
+ExecStart=@WA_HOME@/src/tools/wa-sync-check
+
+[Install]
+WantedBy=graphical-session.target

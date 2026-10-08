@@ -1,0 +1,9 @@
+[Unit]
+Description=WhatsApp Archive - periodic link check for instance %i
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

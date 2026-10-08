@@ -1,0 +1,9 @@
+[Unit]
+Description=WhatsApp Archive — watch the backups folder for a new msgstore backup
+
+[Path]
+PathChanged=@WA_BACKUPS@/msgstore.db.crypt15
+Unit=wa-import.service
+
+[Install]
+WantedBy=default.target

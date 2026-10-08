@@ -1,0 +1,709 @@
+#!/usr/bin/env python3
+"""Serve the WhatsApp archive viewer on http://127.0.0.1:8777 (with HTTP Range for media seeking).
+
+JSON API (same-origin; clients limited by WA_ACCESS):
+  GET    /api/bookmarks          -> [...]            (archive/web/user/bookmarks.json)
+  PUT    /api/bookmarks  [...]   -> {"ok":true}      (atomic write + bookmarks.json.bak)
+  GET    /api/avatars            -> {"<chatId>": "user/avatars/<file>?v=<mtime>"}
+  POST   /api/avatar/<chatId>    raw image body -> {"ok":true,"url":...}
+  DELETE /api/avatar/<chatId>    -> {"ok":true}
+  GET    /api/people             -> {"nicknames":{"<j>":"..."},"groups":[{"id","name","color","members":["<j>"]}]}
+  PUT    /api/people   {...}     -> {"ok":true}      (validated, atomic write + people.json.bak)
+  POST   /api/read {chat} -> {"ok":true,"u":0}   local unread reset + best-effort markChatAsRead on WhatsApp via wa-sync /read (never a read receipt; no PIN needed beyond the gate)
+  GET    /api/changes?since=<seq> -> {"seq":n,"chats":["<chatId>",…]}   ("*" = names/ids changed: reload list)
+  GET    /api/sync/status        -> {"state":"connected|connecting|disconnected|logged_out|stopped","last":ts,"pending":n,…}
+  GET    /api/media/pending      -> [{"chat","chatName","key","kind","name","sz","t","expires","state","progress"}]
+  POST   /api/media/fetch/<chatId>/<keyId> -> {"ok":true,"m":path} | {"ok":true,"state":"queued|downloading"} | {"ok":false,"error":"unavailable"}
+  POST   /api/media/skip/<chatId>/<keyId>  -> {"ok":true}
+  GET    /api/members/<chatId>   -> [{"j","n","admin","active","chat"}]
+  GET    /api/theme              -> {"name","mode","mtime","colors":{key:"#hex"}} | 404 (WA_SYSTEM_THEME)
+  GET    /api/legacy-ids         -> {"<old chat id>": "<new chat id>"}
+  POST   /api/login {"pin"}      -> {"ok":true} + cookie wa_s   (PIN lock; POST /api/logout clears the session)
+  GET    /api/lock               -> {"pin":bool}                (is a PIN set)
+  POST   /api/upload  raw body (X-Name urlencoded, Content-Type) -> {"ok":true,"id"}   (sending: PIN set or WA_ACCESS=local)
+  POST   /api/send    {"chat","type","text"?,"upload"?|"lib"?|"giphy":{"id","kind"}?|"from":{"chat","idx"}?,
+                       "reply"?:{"chat","idx"}|{"key_id","from_me","sender"},"dry"?} -> {"ok":true,"key_id"}
+                      type text|image|video|document|ptt|audio|sticker|gif; sent by tools/wa-sync (tools/sender.py)
+  GET    /api/stickers|gifs?offset=0&limit=60 -> {"fav":[item],"recent":[item],"items":[item],"next":offset|null,"total":n}
+                      item = {"id":"l:<id>"|"a:<sha16>","url","poster"? (gifs),"fav","last"}; fav/recent only at offset 0; deduped by sha256
+                      (without offset/limit: the old {"saved":[...],"archive":[...]} shape)
+  POST   /api/purge   {"items":[{"chat","key_id"}|{"chat","idx"}],"media"?,"dry"?} -> {"ok","removed","files","missing"}  (needs PIN; tombstoned)
+  GET    /api/chatperm/<chatId> -> {"admin":bool,"me_jid"}   am I an admin of this group
+  GET    /emoji.json     -> [{"g":group,"e":[emoji]}]  (tools/web-static/emoji.json)
+  POST   /api/stickers|gifs/save  {"upload"|"giphy":{"id","kind"}|"chat"+"key"|"path"} -> {"ok":true,"id"}
+  POST   /api/stickers|gifs/fav   {"id","fav"} -> {"ok":true,"id":"l:<id>"}   /used {"id"} -> same   (id may be an "a:<sha16>" archive item: saved first)
+  POST   /api/delete  {"chat"?,"idx"?,"key_id"?,"scope":"me"|"everyone","dry"?} -> {"ok":true,"scope","key_id"}   (needs PIN like /api/send)
+  POST   /api/react   {"chat"?,"idx"?,"key_id"?,"emoji" ("" removes),"dry"?} -> {"ok":true,"key_id","emoji"}   (needs PIN)
+                      both find the message by key_id (preferred) or chat+idx; send type "forward": {"chat" (target),"from":{key_id|chat+idx}}
+  GET    /api/me         -> {"jid","j","name","avatar":"/user/avatars/<j>.jpg?v=<mtime>"|null}
+  GET    /api/avatar-history/<chatId> -> [{"url","ts"}] newest first (the current picture excluded)
+  POST   /api/stickers|gifs/remove {"id"} -> {"ok":true}
+  GET    /api/emoji -> {"fav":[e],"recent":[e]}   POST /api/emoji/used {"e"}   POST /api/emoji/fav {"e","fav"}  (user/emoji.json)
+  GET    /api/gifsearch?q=&kind=gifs|stickers&offset=0&limit=25 -> {"items":[{"id":"giphy:<id>"|"klipy:<id>","preview","mp4"|"webp","w","h"}],"next":offset|null,"providers":[..]}
+                      every provider with a key (WA_GIPHY_KEY, WA_KLIPY_KEY), merged; no key at all -> 503 "no key"; keys stay on the server
+  GET    /api/giphy?q=&kind=gifs|stickers&offset=&limit=(max 50)  -> GIPHY JSON (the old route, kept)
+
+PIN lock: `wa-archive --set-pin` / `--clear-pin` (tools/viewer_lock.py). With a PIN, every path needs the
+wa_s session cookie (or header X-WA-Token = state/api-token, for background tools), except /login, /manifest.webmanifest
+and /icons/<file> (the login page shows the app icon). Without a PIN, nothing changes.
+
+/data/{chats,search,media,people}.json and /data/c/<id>.json are generated from archive.db (cached in
+memory, refreshed from the `changes` feed). Without archive.db the static files under data/ are served.
+"""
+import base64, gzip, hmac, http.server, ipaddress, json, os, re, shutil, socket, subprocess, sys, threading, time, urllib.parse, webbrowser
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import waconf
+import viewer_lock
+if "--set-pin" in sys.argv or "--clear-pin" in sys.argv: sys.exit(viewer_lock.cli(sys.argv))
+import avatars_lib as av
+import sender
+
+ROOT = waconf.WEB
+USER = waconf.USER
+BOOKMARKS = os.path.join(USER, "bookmarks.json")
+PEOPLE = os.path.join(USER, "people.json")
+STATUS_FILE = os.path.join(waconf.STATE, "status.json")
+PORT = waconf.PORT
+# Access mode (wa.conf WA_ACCESS): local = this machine only; tailscale = + devices on your tailnet;
+# lan = + local network (requires WA_PASSWORD). WA_PASSWORD (optional) protects non-local clients.
+ACCESS = waconf.CONF.get("WA_ACCESS", "local").strip().lower()
+PASSWORD = waconf.CONF.get("WA_PASSWORD", "")
+LOOPBACK = [ipaddress.ip_network(n) for n in ("127.0.0.0/8", "::1/128")]
+TAILNET = [ipaddress.ip_network(n) for n in ("100.64.0.0/10", "fd7a:115c:a1e0::/48")]
+PRIVATE = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fe80::/10", "fc00::/7")]
+NETS = {"local": LOOPBACK, "tailscale": LOOPBACK + TAILNET, "lan": LOOPBACK + TAILNET + PRIVATE}
+if ACCESS not in NETS:
+    sys.exit(f"WA_ACCESS={ACCESS!r} غير معروف: استعمل local أو tailscale أو lan")
+if ACCESS == "lan" and not PASSWORD:
+    sys.exit("WA_ACCESS=lan بيحتاج WA_PASSWORD بملف wa.conf")
+ALLOWED = NETS[ACCESS]
+
+
+def client_ip(addr):
+    ip = ipaddress.ip_address(addr.split("%")[0])
+    return ip.ipv4_mapped or ip if ip.version == 6 else ip
+
+
+def is_loopback(addr): return any(client_ip(addr) in n for n in LOOPBACK)
+def is_allowed(addr): return any(client_ip(addr) in n for n in ALLOWED)
+def client_key(peer, headers):
+    # tailscale serve connects from loopback and passes the real client in X-Forwarded-For (its last hop)
+    xff = headers.get("X-Forwarded-For", "")
+    return "ip:" + (xff.split(",")[-1].strip() if xff and is_loopback(peer) else peer)
+def is_https(headers):
+    return headers.get("X-Forwarded-Proto", "").lower() == "https" or headers.get("Host", "").lower().endswith(".ts.net")
+PUBLIC = ("/login", "/api/login", "/api/logout", "/manifest.webmanifest")  # reachable without a session (PIN lock)
+PUBLIC_ICON = re.compile(r"/icons/[A-Za-z0-9][A-Za-z0-9._-]*")  # app icons: plain file names only (no dirs, no "..")
+MAX_BODY = 20 * 1024 * 1024
+LONG_CACHE = (f"/{waconf.MEDIA_DIR}/", "/thumbs/", "/fonts/")
+# library files and GIF posters are named after their content hash: cache for a week, never revalidate (only on a successful reply)
+IMMUTABLE = re.compile(r"/(user/(stickers|gifs)/[0-9a-f]{16}\.(webp|mp4)|thumbs/gif/[0-9a-f]{16}\.jpg|thumbs/stk/[0-9a-f]{16}\.webp)")
+LOGIN_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
+             "img-src 'self' data:; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+VD = None
+if os.path.exists(waconf.DB):
+    import viewer_data, archive_db
+    VD = viewer_data.ViewerData()
+    av.set_provider(VD.chat_ids)
+    threading.Thread(target=VD.refresh, daemon=True).start()
+    def _warm():  # hash the archive stickers/GIFs once, so the first picker open is not slow
+        for k in ("stickers", "gifs"):
+            try: sender.archive_unique(k)
+            except Exception: pass
+    threading.Thread(target=_warm, daemon=True).start()
+_gz = {}
+_lock = threading.Lock()
+os.makedirs(USER, exist_ok=True)
+def _link(name, target):  # web-root entries that live elsewhere in a docker instance (user/, media/)
+    l = os.path.join(ROOT, name); os.makedirs(target, exist_ok=True); os.makedirs(ROOT, exist_ok=True)
+    if not os.path.lexists(l): os.symlink(os.path.relpath(target, ROOT), l)
+_link("user", USER); _link(waconf.MEDIA_DIR, os.path.join(waconf.STORE, waconf.MEDIA_DIR))
+API_TOKEN = viewer_lock.api_token()  # for tools/avatar-fetcher (header X-WA-Token), state/api-token
+
+
+def write_json_atomic(path, data):
+    with _lock:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path): shutil.copy2(path, path + ".bak")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+
+def read_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f: return json.load(f)
+    except (FileNotFoundError, ValueError): return default
+
+
+KEY_RE = re.compile(r"[A-Za-z0-9_\-]{1,64}")
+COLOR_RE = re.compile(r"#[0-9a-fA-F]{3,8}")
+
+
+def validate_people(d):
+    """Return an error string, or None if d matches the people.json shape."""
+    if not isinstance(d, dict): return "expected an object"
+    extra = set(d) - {"nicknames", "groups"}
+    if extra: return f"unknown keys: {sorted(extra)}"
+    nn = d.get("nicknames", {})
+    if not isinstance(nn, dict): return "nicknames must be an object"
+    if len(nn) > 20000: return "too many nicknames"
+    for k, v in nn.items():
+        if not KEY_RE.fullmatch(k): return f"bad nickname key {k!r}"
+        if not isinstance(v, str) or len(v) > 200: return f"nickname for {k} must be a string <= 200"
+    gs = d.get("groups", [])
+    if not isinstance(gs, list): return "groups must be an array"
+    if len(gs) > 500: return "too many groups (max 500)"
+    ids = set()
+    for i, g in enumerate(gs):
+        if not isinstance(g, dict): return f"groups[{i}] must be an object"
+        if set(g) - {"id", "name", "color", "members"}: return f"groups[{i}] has unknown keys"
+        for f in ("id", "name", "color"):
+            if not isinstance(g.get(f), str) or len(g[f]) > 200: return f"groups[{i}].{f} must be a string <= 200"
+        if not g["id"] or g["id"] in ids: return f"groups[{i}].id missing or duplicate"
+        ids.add(g["id"])
+        if g["color"] and not COLOR_RE.fullmatch(g["color"]): return f"groups[{i}].color must be #hex"
+        ms = g.get("members")
+        if not isinstance(ms, list) or len(ms) > 5000: return f"groups[{i}].members must be an array"
+        if not all(isinstance(m, str) and KEY_RE.fullmatch(m) for m in ms): return f"groups[{i}].members must be number strings"
+    return None
+
+
+def sync_status():
+    st = read_json(STATUS_FILE, {})
+    out = {"state": st.get("state", "stopped"), "last": st.get("last"), "since": st.get("since"),
+           "msg": st.get("msg"), "me": st.get("me")}
+    if out["state"] == "connected" and (not out["last"] or time.time() - out["last"] > 150):
+        out["state"] = "disconnected"  # heartbeat stale: service not running
+        out["msg"] = out["msg"] or "no heartbeat"
+    if VD:
+        out["pending"] = VD.db().execute(
+            "select count(*) from media where state in ('pending','queued','downloading','failed')").fetchone()[0]
+    else:
+        out["pending"] = 0
+    return out
+
+
+def wdb():
+    """Short-lived write connection (jobs / skip)."""
+    return archive_db.connect(waconf.DB)
+
+
+def media_lookup(cid, key):
+    db = VD.db()
+    m = db.execute("select * from messages where chat_id=? and key_id=? order by from_me desc limit 1", (cid, key)).fetchone()
+    if m is None:
+        ren = db.execute("select new from chat_renames where old=?", (cid,)).fetchone()
+        if ren:
+            m = db.execute("select * from messages where chat_id=? and key_id=? limit 1", (ren[0], key)).fetchone()
+    if m is None:
+        return None, None
+    return m, db.execute("select * from media where msg_id=?", (m["id"],)).fetchone()
+
+
+def pending_list():
+    db = VD.db()
+    rows = db.execute("""select md.*, m.chat_id, m.key_id, m.ts, m.kind mkind, m.data from media md
+                         join messages m on m.id = md.msg_id
+                         where md.state in ('pending','queued','downloading','failed') order by m.ts desc limit 500""").fetchall()
+    out = []
+    names = {}
+    for r in rows:
+        d = json.loads(r["data"]) if r["data"] else {}
+        info = json.loads(r["info"]) if r["info"] else {}
+        if r["chat_id"] not in names:
+            c = db.execute("select * from chats where id=?", (r["chat_id"],)).fetchone()
+            VD.refresh()
+            names[r["chat_id"]] = VD.chat_name(c) if c else r["chat_id"]
+        out.append({"chat": r["chat_id"], "chatName": names[r["chat_id"]], "key": r["key_id"],
+                    "kind": r["kind"] or r["mkind"], "name": r["name"] or d.get("n") or "", "sz": r["size"],
+                    "t": r["ts"], "expires": info.get("expires"), "state": r["state"],
+                    "progress": r["progress"], **({"error": r["error"]} if r["error"] else {})})
+    return out
+
+
+class H(http.server.SimpleHTTPRequestHandler):
+    _denied = False  # True once the PIN lock has answered the request
+    def __init__(self, *a, **k): super().__init__(*a, directory=ROOT, **k)
+    def log_message(self, *a): pass
+
+    def parse_request(self):
+        if not super().parse_request(): return False
+        ip = self.client_address[0]
+        if not is_allowed(ip):
+            self.send_error(403, "forbidden"); return False
+        if PASSWORD and not is_loopback(ip):
+            got = self.headers.get("Authorization", "")
+            want = "Basic " + base64.b64encode(f"wa:{PASSWORD}".encode()).decode()
+            if not hmac.compare_digest(got, want):
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="WhatsApp Archive", charset="UTF-8"')
+                self.send_header("Content-Length", "0")
+                self.end_headers(); return False
+        return self._lock_ok()
+
+    def send_response(self, code, message=None):
+        self._code = code
+        super().send_response(code, message)
+
+    def end_headers(self):
+        self.path = getattr(self, "path", "")  # unset when the request line itself was malformed
+        if not self._denied and getattr(self, "_code", 0) in (200, 206, 304) and IMMUTABLE.fullmatch(self.path.split("?", 1)[0]):
+            self.send_header("Cache-Control", "private, max-age=604800, immutable")
+        elif self._denied or self.path.startswith("/api/") or self.path.startswith("/user/"):
+            self.send_header("Cache-Control", "no-store")
+        elif self.path.startswith("/data/"):
+            self.send_header("Cache-Control", "private, no-cache")
+        elif self.path.split("?", 1)[0] in ("/", "/index.html", "/sw.js", "/manifest.webmanifest"):
+            self.send_header("Cache-Control", "no-cache")
+        elif self.path.split("?", 1)[0] == "/emoji.json":
+            self.send_header("Cache-Control", "private, max-age=86400")
+        elif self.path.startswith(LONG_CACHE) and getattr(self, "_code", 0) in (200, 206, 304):  # a 404 must not be cached
+            self.send_header("Cache-Control", "private, max-age=86400")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", LOGIN_CSP if self.path.split("?", 1)[0] == "/login" else "frame-ancestors 'none'")
+        super().end_headers()
+
+    # ---------- PIN lock (tools/viewer_lock.py) ----------
+    def _lock_ok(self):
+        """True if the request may go on; otherwise the refusal has already been sent."""
+        p = self.path.split("?", 1)[0]
+        if not viewer_lock.pin_set() or p in PUBLIC or PUBLIC_ICON.fullmatch(p): return True
+        tok = self.headers.get("X-WA-Token", "")
+        if tok and hmac.compare_digest(tok.encode(), API_TOKEN.encode()): return True  # background tools
+        if viewer_lock.session_ok(viewer_lock.cookie_token(self.headers.get("Cookie"))): return True
+        self._denied = self.close_connection = True  # any request body is not read, so drop the connection
+        if p in ("/", "/index.html") or "text/html" in self.headers.get("Accept", ""):
+            self.send_response(302); self.send_header("Location", "/login"); self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self._err(401, "login required")
+        return False
+
+    def _login(self):
+        raw = self._body(limit=1024)
+        if raw is None: return
+        try: pin = json.loads(raw)["pin"]
+        except Exception: pin = None
+        if not isinstance(pin, str): return self._err(400, "pin required")
+        ip = client_key(self.client_address[0], self.headers)
+        with viewer_lock.login_mu:  # check + verify + record atomically (else N parallel guesses all pass the throttle)
+            wait = max(viewer_lock.wait_left(ip), viewer_lock.wait_left(viewer_lock.GLOBAL))
+            if wait:
+                secs = int(wait) + 1
+                return self._json({"ok": False, "error": "locked", "wait": secs}, 429, [("Retry-After", str(secs))])
+            ok = viewer_lock.check_pin(pin, viewer_lock.stored_pin())
+            viewer_lock.record(ip, ok); viewer_lock.record(viewer_lock.GLOBAL, ok)
+        if not ok: return self._err(401, "wrong pin")
+        tok = viewer_lock.new_session()
+        self._json({"ok": True}, extra=[("Set-Cookie", viewer_lock.set_cookie(tok, viewer_lock.SESSION_SECS, is_https(self.headers)))])
+
+    def _logout(self):
+        tok = viewer_lock.cookie_token(self.headers.get("Cookie"))
+        if tok: viewer_lock.drop_session(tok)
+        self._json({"ok": True}, extra=[("Set-Cookie", viewer_lock.set_cookie("", 0, is_https(self.headers)))])
+
+    def _login_page(self):
+        with open(os.path.join(waconf.TOOLS, "login.html"), "rb") as f: body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-WA-Login", "1")  # the service worker never caches this page
+        self.end_headers()
+        self.wfile.write(body)
+
+    # ---------- API ----------
+    def _json(self, obj, code=200, extra=()):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in extra: self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _err(self, code, msg): self._json({"ok": False, "error": msg}, code)
+
+    def _allowed(self):
+        if not is_allowed(self.client_address[0]):
+            self._err(403, "forbidden"); return False
+        # writes only from pages served by this server (same origin), so other websites can't touch the data
+        origin = self.headers.get("Origin")
+        if origin and re.sub(r"^https?://", "", origin) != self.headers.get("Host", ""):
+            self._err(403, "bad origin"); return False
+        return True
+
+    def _body(self, limit=MAX_BODY):
+        try: n = int(self.headers.get("Content-Length") or 0)
+        except ValueError: n = -1
+        if n < 0: self._err(411, "length required"); return None
+        if n > limit:
+            self.close_connection = True
+            self._err(413, "body too large"); return None
+        return self.rfile.read(n)
+
+    def _api(self, method):
+        if not self._allowed(): return
+        p = self.path.split("?", 1)[0].rstrip("/")
+        m = re.fullmatch(r"/api/avatar/([^/]+)", p)
+        try:
+            if p == "/api/logout" and method == "POST": return self._logout()
+            if p == "/api/login" and method == "POST" and viewer_lock.pin_set(): return self._login()
+            if p == "/api/lock" and method == "GET": return self._json({"pin": viewer_lock.pin_set()})
+            if p == "/api/bookmarks" and method == "GET":
+                try:
+                    with open(BOOKMARKS, encoding="utf-8") as f: data = json.load(f)
+                except FileNotFoundError: data = []
+                return self._json(data if isinstance(data, list) else [])
+            if p == "/api/bookmarks" and method == "PUT":
+                raw = self._body()
+                if raw is None: return
+                try: data = json.loads(raw.decode("utf-8"))
+                except Exception: return self._err(400, "invalid JSON")
+                if not isinstance(data, list): return self._err(400, "expected a JSON array")
+                write_json_atomic(BOOKMARKS, data)
+                return self._json({"ok": True})
+            if p == "/api/people" and method == "GET":
+                d = read_json(PEOPLE, {})
+                if not isinstance(d, dict): d = {}
+                return self._json({"nicknames": d.get("nicknames") or {}, "groups": d.get("groups") or []})
+            if p == "/api/people" and method == "PUT":
+                raw = self._body()
+                if raw is None: return
+                try: data = json.loads(raw.decode("utf-8"))
+                except Exception: return self._err(400, "invalid JSON")
+                err = validate_people(data)
+                if err: return self._err(400, err)
+                write_json_atomic(PEOPLE, {"nicknames": data.get("nicknames", {}), "groups": data.get("groups", [])})
+                return self._json({"ok": True})
+            if p == "/api/changes" and method == "GET":
+                if not VD:
+                    import viewer_data as _vd
+                    return self._json({"seq": 0, "chats": [], "theme": _vd.theme_mtime()})
+                q = self.path.split("?", 1)[1] if "?" in self.path else ""
+                mm = re.search(r"(?:^|&)since=(\d+)", q)
+                return self._json(VD.changes(int(mm.group(1)) if mm else None))
+            if p == "/api/theme" and method == "GET":
+                import viewer_data as _vd
+                t = _vd.theme()
+                return self._json(t) if t else self._err(404, "no system theme")
+            if p == "/api/legacy-ids" and method == "GET":
+                # old static-build chat ids (msgstore chat._id) -> stable ids, plus lid->phone renames
+                m = read_json(os.path.join(waconf.STATE, "chat-id-map.json"), {})
+                if VD:
+                    m.update({r[0]: r[1] for r in VD.db().execute("select old, new from chat_renames")})
+                return self._json(m)
+            if p == "/api/sync/status" and method == "GET":
+                return self._json(sync_status())
+            if p == "/api/media/pending" and method == "GET":
+                return self._json(pending_list() if VD else [])
+            if p == "/api/upload" and method == "POST": return self._upload()
+            if p == "/api/send" and method == "POST": return self._send()
+            if p == "/api/giphy" and method == "GET": return self._giphy(sender.giphy_search)
+            if p == "/api/gifsearch" and method == "GET": return self._giphy(sender.gif_search)
+            if p == "/api/delete" and method == "POST": return self._msg_action(sender.delete_msg)
+            if p == "/api/react" and method == "POST": return self._msg_action(sender.react_msg)
+            if p == "/api/purge" and method == "POST": return self._msg_action(self._purge)
+            if p == "/api/me" and method == "GET": return self._me()
+            if p == "/api/read" and method == "POST": return self._read()
+            mm = re.fullmatch(r"/api/chatperm/([A-Za-z0-9_-]{1,64})", p)
+            if mm and method == "GET": return self._run(sender.chat_perm, mm.group(1))
+            if p == "/api/emoji" and method == "GET": return self._json(sender.emoji_overview())
+            mm = re.fullmatch(r"/api/emoji/(used|fav)", p)
+            if mm and method == "POST":
+                body = self._json_body(limit=4096)
+                return None if body is None else self._run(sender.emoji_set, body, mm.group(1))
+            mm = re.fullmatch(r"/api/avatar-history/([A-Za-z0-9_-]{1,64})", p)
+            if mm and method == "GET": return self._json(av.history(mm.group(1)))
+            mm = re.fullmatch(r"/api/(stickers|gifs)(?:/(save|fav|used|remove))?", p)
+            if mm and method == ("GET" if mm.group(2) is None else "POST"): return self._library(*mm.groups())
+            mm = re.fullmatch(r"/api/media/(fetch|skip)/([A-Za-z0-9_-]{1,64})/([A-Za-z0-9_.:-]{1,128})", p)
+            if mm and method == "POST":
+                if not VD: return self._err(404, "no archive.db")
+                action, cid, key = mm.groups()
+                msg, md = media_lookup(cid, key)
+                if msg is None: return self._err(404, "message not found")
+                d = json.loads(msg["data"]) if msg["data"] else {}
+                if action == "skip":
+                    if md is not None:
+                        db = wdb(); db.execute("update media set state='skipped', updated=? where msg_id=?", (int(time.time()), msg["id"]))
+                        db.execute("insert into changes (chat_id, ts) values (?,?)", (msg["chat_id"], int(time.time()))); db.commit(); db.close()
+                    return self._json({"ok": True})
+                if d.get("m") and os.path.exists(os.path.join(waconf.STORE, d["m"])):
+                    return self._json({"ok": True, "m": d["m"]})
+                if md is None or not md["info"]:
+                    return self._err(410, "unavailable")
+                db = wdb()
+                if md["state"] not in ("queued", "downloading"):
+                    db.execute("update media set state='queued', progress=0, error=null, updated=? where msg_id=?", (int(time.time()), msg["id"]))
+                    db.execute("insert into jobs (kind, arg, state, created, updated) values ('media', ?, 'queued', ?, ?)",
+                               (str(msg["id"]), int(time.time()), int(time.time())))
+                    db.execute("insert into changes (chat_id, ts) values (?,?)", (msg["chat_id"], int(time.time())))
+                    db.commit()
+                db.close()
+                # wait a little: small files usually finish quickly
+                deadline = time.time() + 20
+                while time.time() < deadline:
+                    time.sleep(0.5)
+                    r = VD.db().execute("select state, path, error from media where msg_id=?", (msg["id"],)).fetchone()
+                    if r["state"] == "done" and r["path"]:
+                        return self._json({"ok": True, "m": r["path"]})
+                    if r["state"] == "failed":
+                        return self._json({"ok": False, "error": r["error"] or "failed"}, 502)
+                st = sync_status()["state"]
+                return self._json({"ok": True, "state": r["state"], **({"sync": st} if st != "connected" else {})})
+            mm = re.fullmatch(r"/api/members/([A-Za-z0-9_-]{1,64})", p)
+            if mm and method == "GET":
+                return self._json(VD.members(mm.group(1)) if VD else [])
+            if p == "/api/avatars" and method == "GET":
+                return self._json(av.list_avatars())
+            if m and method in ("POST", "PUT"):
+                cid = m.group(1)
+                if not av.valid_id(cid): return self._err(400, "invalid chat id")
+                raw = self._body()
+                if raw is None: return
+                with _lock:
+                    try: url = av.save_avatar(cid, raw)
+                    except ValueError as e: return self._err(400, str(e))
+                return self._json({"ok": True, "url": url})
+            if m and method == "DELETE":
+                cid = m.group(1)
+                if not av.valid_id(cid): return self._err(400, "invalid chat id")
+                with _lock: av.remove_avatar(cid)
+                return self._json({"ok": True})
+            return self._err(404 if method == "GET" else 405, "not found")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            self._err(500, f"{type(e).__name__}: {e}")
+
+    # ---------- sending, sticker/GIF library, GIPHY (tools/sender.py) ----------
+    def _can_send(self):
+        if viewer_lock.pin_set(): return True
+        # no PIN: this machine only, and only under a loopback Host name (a rebound DNS name would otherwise pass the Origin check)
+        if ACCESS == "local" and re.fullmatch(r"(127\.0\.0\.1|localhost|\[::1\])(:\d+)?", self.headers.get("Host", "").lower()): return True
+        self.close_connection = True  # a request body, if any, is not read
+        self._err(403, "set a PIN first"); return False
+
+    def _json_body(self, limit=1 << 20):
+        raw = self._body(limit=limit)
+        if raw is None: return None
+        try: d = json.loads(raw.decode("utf-8"))
+        except ValueError: self._err(400, "invalid JSON"); return None
+        if not isinstance(d, dict): self._err(400, "expected a JSON object"); return None
+        return d
+
+    def _run(self, fn, *a, **kw):
+        try: res = fn(*a, **kw)
+        except sender.Err as e: return self._err(e.code, str(e))
+        self._json(res)
+
+    def _upload(self):
+        if not self._can_send(): return
+        try: n = int(self.headers.get("Content-Length") or -1)
+        except ValueError: n = -1
+        if n < 0: return self._err(411, "length required")
+        if n == 0: return self._err(400, "empty file")
+        if n > sender.UPLOAD_MAX:
+            self.close_connection = True
+            return self._err(413, f"file too large (max {waconf.get('WA_UPLOAD_MAX_MB', int)} MB)")
+        try: uid = sender.save_upload(self.rfile, n, self.headers.get("X-Name", ""), self.headers.get("Content-Type", ""))
+        except BaseException as e:
+            self.close_connection = True  # the body may be half read
+            if isinstance(e, sender.Err): return self._err(e.code, str(e))
+            raise
+        self._json({"ok": True, "id": uid})
+
+    def _send(self):
+        if not self._can_send(): return
+        body = self._json_body()
+        if body is not None: self._run(sender.send, body)
+
+    def _msg_action(self, fn):
+        if not self._can_send(): return
+        body = self._json_body(limit=65536)
+        if body is not None: self._run(fn, body)
+
+    @staticmethod
+    def _purge(body):
+        res = sender.purge(body)
+        if VD and not res.get("dry"):
+            VD.last_check = 0  # the changes entry is picked up right now, not up to a second later
+            VD.refresh()
+        return res
+
+    def _read(self):
+        body = self._json_body(limit=4096)
+        if body is None: return
+        self._run(self._mark_read, body)
+
+    @staticmethod
+    def _mark_read(body):
+        res = sender.mark_read(body)
+        if VD:
+            VD.last_check = 0
+            VD.refresh()
+        return res
+
+    def _me(self):
+        me = sender._me()
+        if not me: return self._json({"jid": None, "j": None, "name": "", "avatar": None})
+        f = av.current_file(me["j"]) if av._safe_key(me["j"]) else None
+        self._json({**me, "avatar": "/" + av.avatar_url(f) if f else None})
+
+    def _giphy(self, search):  # GIF/sticker search proxy: the provider keys never leave the server
+        if not self._can_send(): return
+        q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        try: offset = min(5000, max(0, int((q.get("offset") or ["0"])[0])))
+        except ValueError: return self._err(400, "bad offset")
+        try: limit = min(50, max(1, int((q.get("limit") or ["25"])[0])))
+        except ValueError: return self._err(400, "bad limit")
+        self._run(search, (q.get("kind") or ["gifs"])[0], (q.get("q") or [""])[0][:100], offset, limit)
+
+    def _library(self, kind, action):
+        if action is None:
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            if "offset" not in q and "limit" not in q: return self._run(sender.lib_overview, kind)
+            try: offset, limit = max(0, int((q.get("offset") or ["0"])[0])), min(200, max(1, int((q.get("limit") or ["60"])[0])))
+            except ValueError: return self._err(400, "bad offset/limit")
+            return self._run(sender.lib_page, kind, offset, limit)
+        body = self._json_body(limit=65536)
+        if body is None: return
+        if action == "save":
+            if body.get("giphy") and not self._can_send(): return  # a GIPHY download counts as sending
+            return self._run(sender.lib_save, kind, body)
+        if action == "remove": return self._run(sender.lib_remove, kind, body.get("id"))
+        if action == "fav": return self._run(sender.lib_set, kind, body.get("id"), fav=bool(body.get("fav")))
+        return self._run(sender.lib_set, kind, body.get("id"), last=int(time.time()))  # used
+
+    def _data(self):
+        """Dynamic /data/*.json from archive.db."""
+        p = self.path.split("?", 1)[0]
+        mm = re.fullmatch(r"/data/(chats|search|media|people)\.json", p) or re.fullmatch(r"/data/(c/[A-Za-z0-9_-]{1,64})\.json", p)
+        if not mm:
+            self.send_error(404); return
+        body = VD.get(mm.group(1))
+        if body is None:
+            self.send_error(404); return
+        etag = f'"{VD.seq}-{len(body)}-{hash(body) & 0xffffffff:x}"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304); self.send_header("ETag", etag); self.end_headers(); return
+        if "gzip" in (self.headers.get("Accept-Encoding") or "") and len(body) > 2048:
+            key = (mm.group(1), etag)
+            z = _gz.get(key)
+            if z is None:
+                z = gzip.compress(body, 5)
+                if len(_gz) > 64: _gz.clear()
+                _gz[key] = z
+            body = z
+            enc = True
+        else:
+            enc = False
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        if enc: self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def translate_path(self, path):
+        # the UI and fonts come straight from tools/ (no build step needed after frontend edits)
+        p = path.split("?", 1)[0]
+        if p in ("/", "/index.html"):
+            return os.path.join(waconf.TOOLS, "viewer.html")
+        if p.startswith("/fonts/"):
+            f = os.path.join(waconf.TOOLS, "fonts", os.path.basename(p))
+            if os.path.isfile(f): return f
+        if p in ("/manifest.webmanifest", "/sw.js", "/emoji.json") or p.startswith("/icons/"):  # PWA shell files; never fall back to the archive root
+            return os.path.join(waconf.TOOLS, "web-static", p.lstrip("/").replace("..", ""))
+        return super().translate_path(path)
+
+    def do_GET(self):
+        if self.path.split("?", 1)[0] == "/login" and viewer_lock.pin_set(): return self._login_page()
+        if self.path.startswith("/api/"): return self._api("GET")
+        if VD and self.path.startswith("/data/") and self.path.split("?")[0].endswith(".json"):
+            try: return self._data()
+            except (BrokenPipeError, ConnectionResetError): return
+        return super().do_GET()
+    def do_HEAD(self):
+        if self.path.startswith("/api/"): return self._err(405, "use GET")
+        return super().do_HEAD()
+    def do_PUT(self): return self._api("PUT") if self.path.startswith("/api/") else self._err(405, "method not allowed")
+    def do_POST(self): return self._api("POST") if self.path.startswith("/api/") else self._err(405, "method not allowed")
+    def do_DELETE(self): return self._api("DELETE") if self.path.startswith("/api/") else self._err(405, "method not allowed")
+
+    # ---------- static with Range ----------
+    def send_head(self):
+        self._left = None  # handler is reused across keep-alive requests
+        rng = self.headers.get("Range")
+        path = self.translate_path(self.path)
+        m = re.match(r"bytes=(\d*)-(\d*)$", rng.strip()) if rng else None
+        if not m or not (m.group(1) or m.group(2)) or not os.path.isfile(path):
+            return super().send_head()
+        size = os.path.getsize(path)
+        a = int(m.group(1)) if m.group(1) else max(0, size - int(m.group(2)))
+        b = int(m.group(2)) if m.group(1) and m.group(2) else size - 1
+        b = min(b, size - 1)
+        if a >= size or a > b:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        f = open(path, "rb"); f.seek(a)
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Range", f"bytes {a}-{b}/{size}")
+        self.send_header("Content-Length", str(b - a + 1))
+        self.end_headers()
+        self._left = b - a + 1
+        return f
+
+    def copyfile(self, src, dst):
+        left = getattr(self, "_left", None)
+        if left is None: return super().copyfile(src, dst)
+        while left > 0:
+            chunk = src.read(min(1 << 16, left))
+            if not chunk: break
+            try: dst.write(chunk)
+            except (BrokenPipeError, ConnectionResetError): break
+            left -= len(chunk)
+
+
+def tailscale_names():
+    try:
+        st = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, timeout=5).stdout)
+        return st["Self"]["DNSName"].rstrip("."), (st["Self"].get("TailscaleIPs") or [None])[0]
+    except Exception:
+        return None, None
+
+
+class Server(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # dual-stack: IPv4 + IPv6
+        super().server_bind()
+
+
+bind = waconf.CONF.get("WA_BIND_OVERRIDE") or ("127.0.0.1" if ACCESS == "local" else "::")
+srv = (http.server.ThreadingHTTPServer if ":" not in bind else Server)((bind, PORT), H)
+srv.daemon_threads = True
+url = f"http://127.0.0.1:{PORT}/"
+print(f"WhatsApp Archive [{ACCESS}]: {url}  (Ctrl+C للإيقاف)")
+print("  قفل الرمز: مفعّل" if viewer_lock.pin_set() else "  بدون قفل: شغّل tools/wa-archive --set-pin لتحمي العارض", flush=True)
+if ACCESS in ("tailscale", "lan"):
+    name, ip = tailscale_names()
+    if name: print(f"  Tailscale: http://{name}:{PORT}/   http://{ip}:{PORT}/")
+    elif ACCESS == "tailscale": print("  ⚠ tailscale مش شغّال على هالجهاز")
+    print("  " + ("محمي بكلمة سر (المستخدم: wa)" if PASSWORD else "بدون كلمة سر: بس أجهزتك على Tailscale بتقدر تفتحه"))
+if "--no-open" not in sys.argv: threading.Timer(0.5, webbrowser.open, [url]).start()
+try: srv.serve_forever()
+except KeyboardInterrupt: pass

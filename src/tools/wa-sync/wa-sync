@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# wa-sync — control the WhatsApp live-sync service
+#   wa-sync status | start | stop | restart | logs | pair | run
+set -eu
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+WA_HOME="${WA_HOME:-$(cd "$HERE/../../.." && pwd)}"
+NODE="$(command -v node)"
+case "${1:-status}" in
+  status)
+    systemctl --user --no-pager status wa-sync 2>/dev/null | head -5 || true
+    echo; cat "$WA_HOME/state/status.json" 2>/dev/null && echo ;;
+  start|stop|restart) systemctl --user "$1" wa-sync ;;
+  logs) journalctl --user -u wa-sync -f -n 50 ;;
+  pair)
+    was=$(systemctl --user is-active wa-sync 2>/dev/null || true)
+    [ "$was" = "active" ] && systemctl --user stop wa-sync
+    WA_HOME="$WA_HOME" "$NODE" "$HERE/sync.mjs" --pair || true
+    systemctl --user start wa-sync 2>/dev/null || true ;;
+  run) WA_HOME="$WA_HOME" exec "$NODE" "$HERE/sync.mjs" ;;
+  *) echo "usage: wa-sync status|start|stop|restart|logs|pair|run"; exit 1 ;;
+esac

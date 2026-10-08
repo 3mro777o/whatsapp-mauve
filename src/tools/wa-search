@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Usage: wa-search "words" [chat-name-filter] [limit]
+# FTS5 syntax works: "exact phrase", word*, a OR b, a NOT b
+DB="$(dirname "$(readlink -f "$0")")/../../archive/search.db"
+q="$1"; chat="${2:-}"; lim="${3:-30}"
+[ -z "$q" ] && { sed -n 2,3p "$0"; exit 1; }
+sqlite3 -separator ' │ ' "$DB" "
+SELECT m.date, m.chat, m.sender, replace(snippet(fts,0,'«','»','…',20),char(10),' ')
+FROM fts JOIN messages m ON m.id=fts.rowid
+WHERE fts MATCH '$(printf %s "$q" | sed "s/'/''/g")'
+  AND m.chat LIKE '%$(printf %s "$chat" | sed "s/'/''/g")%'
+ORDER BY m.ts DESC LIMIT $lim;"

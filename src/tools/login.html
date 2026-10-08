@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>أرشيف واتساب · الدخول</title>
+<style>
+  :root{--accent:#cba6f7;--accenth:color-mix(in srgb,var(--accent) 88%,#000);--bg:#000;--panel:#181825;--text:#cdd6f4;--sub:#9399b2;--field:#11111b;--line:#313244;--danger:#f38ba8;--onaccent:#1e1e2e}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text)}
+  body{display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,"Segoe UI",Tahoma,Arial,sans-serif}
+  @media (max-width:760px) and (orientation:portrait){body{align-items:flex-start;padding-top:22vh}}
+  main{width:100%;max-width:340px;padding:26px 22px;border-radius:20px;background:var(--panel);text-align:center}
+  .logo{display:block;width:76px;height:76px;margin:0 auto 14px;border-radius:22%}
+  h1{margin:0 0 6px;font-size:20px;font-weight:700;color:var(--accent)}
+  .sub{margin:0 0 22px;font-size:14px;color:var(--sub)}
+  form{display:grid;gap:12px}
+  input{width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:12px;background:var(--field);color:var(--text);font:inherit;font-size:16px;text-align:center;outline:none}
+  input:focus{border-color:var(--accent)}
+  button{padding:13px;border:0;border-radius:12px;background:var(--accent);color:var(--onaccent);font:inherit;font-size:16px;font-weight:700;cursor:pointer}
+  button:hover{background:var(--accenth)}
+  button:disabled{opacity:.6;cursor:default}
+  #e{min-height:1.4em;margin:12px 0 0;font-size:14px;color:var(--danger)}
+</style>
+</head>
+<body>
+<main>
+  <img class="logo" src="/icons/icon-192.png" alt="" width="76" height="76">
+  <h1 id="t-h1">أرشيف واتساب</h1>
+  <p class="sub" id="t-sub">أدخل الرمز للدخول</p>
+  <form id="f">
+    <input id="p" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" maxlength="256" autofocus required aria-label="الرمز" placeholder="الرمز">
+    <button id="b" type="submit">دخول</button>
+  </form>
+  <p id="e" role="alert"></p>
+</main>
+<script>
+// i18n: the viewer's language (localStorage wa.lang); the Arabic text above is the default
+const LT = {
+  ar: { title: "أرشيف واتساب · الدخول", h1: "أرشيف واتساب", sub: "أدخل الرمز للدخول", ph: "الرمز", btn: "دخول", rate: "محاولات كثيرة. استنى {n} ثانية", wrong: "الرمز غلط", generic: "ما قدرنا نتحقق، جرّب مرة ثانية", net: "ما قدرنا نتصل بالعارض، جرّب مرة ثانية" },
+  en: { title: "WhatsApp Archive · Sign in", h1: "WhatsApp Archive", sub: "Enter the passcode to continue", ph: "Passcode", btn: "Sign in", rate: "Too many attempts. Wait {n} seconds", wrong: "Wrong passcode", generic: "Couldn't verify, please try again", net: "Couldn't reach the viewer, please try again" },
+  tr: { title: "WhatsApp Arşivi · Giriş", h1: "WhatsApp Arşivi", sub: "Devam etmek için şifreyi girin", ph: "Şifre", btn: "Giriş", rate: "Çok fazla deneme. {n} saniye bekleyin", wrong: "Şifre yanlış", generic: "Doğrulanamadı, lütfen tekrar deneyin", net: "Görüntüleyiciye ulaşılamadı, lütfen tekrar deneyin" },
+  de: { title: "WhatsApp-Archiv · Anmeldung", h1: "WhatsApp-Archiv", sub: "Gib den Zugangscode ein, um fortzufahren", ph: "Zugangscode", btn: "Anmelden", rate: "Zu viele Versuche. Warte {n} Sekunden", wrong: "Falscher Zugangscode", generic: "Konnte nicht überprüft werden, bitte versuche es erneut", net: "Der Viewer ist nicht erreichbar, bitte versuche es erneut" },
+};
+let LG = "ar";
+try { const v = localStorage.getItem("wa.lang"); if (LT[v]) LG = v } catch {}
+const T = LT[LG];
+document.documentElement.lang = LG;
+document.documentElement.dir = LG === "ar" ? "rtl" : "ltr";
+document.title = T.title;
+document.getElementById("t-h1").textContent = T.h1;
+document.getElementById("t-sub").textContent = T.sub;
+document.getElementById("p").placeholder = T.ph;
+document.getElementById("p").setAttribute("aria-label", T.ph);
+document.getElementById("b").textContent = T.btn;
+// colors the viewer saved last time (localStorage wa.loginTheme); none saved = the defaults above
+try {
+  const t = JSON.parse(localStorage.getItem("wa.loginTheme") || "{}");
+  for (const k of ["accent", "bg", "panel", "text", "sub", "field", "line", "danger", "onaccent"])
+    if (/^#[0-9a-f]{3,8}$/i.test(t[k])) document.documentElement.style.setProperty("--" + k, t[k]);
+} catch {}
+const f = document.getElementById("f"), p = document.getElementById("p"), b = document.getElementById("b"), e = document.getElementById("e");
+f.addEventListener("submit", async ev => {
+  ev.preventDefault();
+  e.textContent = ""; b.disabled = true;
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: p.value }), cache: "no-store" });
+    if (r.ok || r.status === 404) return location.replace("/");  // 404: no lock any more
+    const d = await r.json().catch(() => ({}));
+    e.textContent = r.status === 429 ? T.rate.replace("{n}", d.wait || 30)
+      : r.status === 401 ? T.wrong : T.generic;
+  } catch {
+    e.textContent = T.net;
+  }
+  b.disabled = false; p.select();
+});
+</script>
+</body>
+</html>

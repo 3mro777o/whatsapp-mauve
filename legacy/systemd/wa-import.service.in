@@ -1,0 +1,11 @@
+[Unit]
+Description=WhatsApp Archive — import the newest phone backup (msgstore.db.crypt15) into archive.db
+
+[Service]
+Type=oneshot
+WorkingDirectory=@WA_HOME@
+Environment=WA_HOME=@WA_HOME@
+Environment=PATH=@PATH@
+ExecStart=@PYTHON@ @WA_HOME@/src/tools/import_msgstore.py --latest
+Nice=15
+IOSchedulingClass=idle

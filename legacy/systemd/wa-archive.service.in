@@ -1,0 +1,19 @@
+[Unit]
+Description=WhatsApp Archive — viewer (enabled by legacy/setup.sh only when WA_VIEWER_AUTOSTART=1)
+Documentation=file://@WA_HOME@/src/docs/ARCHITECTURE.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@WA_HOME@
+Environment=WA_HOME=@WA_HOME@
+ExecStart=@PYTHON@ @WA_HOME@/src/tools/wa-archive --no-open
+Restart=on-failure
+RestartSec=10
+Nice=10
+CPUWeight=20
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target
