@@ -10,7 +10,7 @@ JSON API (same-origin; clients limited by WA_ACCESS):
   GET    /api/people             -> {"nicknames":{"<j>":"..."},"groups":[{"id","name","color","members":["<j>"]}]}
   PUT    /api/people   {...}     -> {"ok":true}      (validated, atomic write + people.json.bak)
   POST   /api/read {chat} -> {"ok":true,"u":0}   local unread reset + best-effort markChatAsRead on WhatsApp via wa-sync /read (never a read receipt; no PIN needed beyond the gate)
-  GET    /api/changes?since=<seq> -> {"seq":n,"chats":["<chatId>",…]}   ("*" = names/ids changed: reload list)
+  GET    /api/changes?since=<seq> -> {"seq":n,"chats":["<chatId>",…],"v":{source: mtime string}}   ("*" = names/ids changed: reload list; "v" = stat-only versions, see live_versions)
   GET    /api/sync/status        -> {"state":"connected|connecting|disconnected|logged_out|stopped","last":ts,"pending":n,…}
   GET    /api/media/pending      -> [{"chat","chatName","key","kind","name","sz","t","expires","state","progress"}]
   POST   /api/media/fetch/<chatId>/<keyId> -> {"ok":true,"m":path} | {"ok":true,"state":"queued|downloading"} | {"ok":false,"error":"unavailable"}
@@ -184,6 +184,18 @@ def sync_status():
     else:
         out["pending"] = 0
     return out
+
+
+def live_versions():  # stat-only: one mtime string per source, the viewer refetches a source when its string changes
+    def mt(*ps):
+        return "/".join(str(os.stat(p).st_mtime_ns) if os.path.exists(p) else "-" for p in ps)
+    U = waconf.USER
+    return {"avatars": mt(os.path.join(U, "avatars")), "people": mt(os.path.join(U, "people.json")),
+            "bookmarks": mt(os.path.join(U, "bookmarks.json")), "emoji": mt(os.path.join(U, "emoji.json")),
+            "stickers": mt(os.path.join(U, "stickers"), os.path.join(U, "stickers", "stickers.json")),
+            "gifs": mt(os.path.join(U, "gifs"), os.path.join(U, "gifs", "gifs.json")),
+            "me": mt(os.path.join(waconf.STATE, "me.json")), "status": mt(STATUS_FILE),
+            "app": mt(os.path.join(waconf.TOOLS, "viewer.html"), os.path.join(waconf.TOOLS, "web-static", "sw.js"))}
 
 
 def wdb():
@@ -384,10 +396,10 @@ class H(http.server.SimpleHTTPRequestHandler):
             if p == "/api/changes" and method == "GET":
                 if not VD:
                     import viewer_data as _vd
-                    return self._json({"seq": 0, "chats": [], "theme": _vd.theme_mtime()})
+                    return self._json({"seq": 0, "chats": [], "theme": _vd.theme_mtime(), "v": live_versions()})
                 q = self.path.split("?", 1)[1] if "?" in self.path else ""
                 mm = re.search(r"(?:^|&)since=(\d+)", q)
-                return self._json(VD.changes(int(mm.group(1)) if mm else None))
+                return self._json(dict(VD.changes(int(mm.group(1)) if mm else None), v=live_versions()))
             if p == "/api/theme" and method == "GET":
                 import viewer_data as _vd
                 t = _vd.theme()

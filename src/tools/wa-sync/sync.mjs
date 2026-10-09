@@ -427,13 +427,20 @@ function groupMeta(g, full) {
   }
 }
 
-// avatars: fill in missing ones once a day, slowly
+// avatars, every 12 h, slowly: fetch missing ones, and re-check chats active in the last 30 days at most every 3 days
+// (change notifications are missed while the computer is off). The writer only keeps a file when the picture differs.
 async function avatarPass() {
   try {
-    const dir = path.join(USER_DIR, "avatars");
+    const dir = path.join(USER_DIR, "avatars"), ckF = path.join(STATE, "avatar-checks.json");
     const have = new Set(fs.existsSync(dir) ? fs.readdirSync(dir).map(f => f.split(".")[0]) : []);
-    const r = spawnSync(PYTHON, ["-c", "import sys,json;sys.path.insert(0,sys.argv[1]);import viewer_data;print(json.dumps([[c['jid'],c['j']] for c in json.loads(viewer_data.ViewerData().get('chats')) if c['type']!='channel']))", TOOLS], { encoding: "utf8", env: { ...process.env, WA_HOME: HOME } });
-    const chats = JSON.parse(r.stdout || "[]").filter(([jid, j]) => !have.has(j) && !jid.endsWith("@broadcast"));
+    let ck = {}; try { ck = JSON.parse(fs.readFileSync(ckF, "utf8")); } catch {}
+    const r = spawnSync(PYTHON, ["-c", "import sys,json;sys.path.insert(0,sys.argv[1]);import viewer_data;import avatars_lib as a\ndef w(j):\n  f=a.current_file(j)\n  return a._width(a.os.path.join(a.AVATARS,f)) if f else 0\nprint(json.dumps([[c['jid'],c['j'],c.get('t') or 0,w(c['j'])] for c in json.loads(viewer_data.ViewerData().get('chats')) if c['type']!='channel']))", TOOLS], { encoding: "utf8", env: { ...process.env, WA_HOME: HOME } });
+    const t = now();
+    // + old low-res copies (256px, before full-quality storage): upgraded to WhatsApp's full picture
+    const chats = JSON.parse(r.stdout || "[]").filter(([jid, j, last, w]) => !jid.endsWith("@broadcast") &&
+      (!have.has(j) || ((t - last < 30 * 86400 || (w && w < 600)) && t - (ck[j] || 0) > 3 * 86400)));
+    for (const [, j] of chats) ck[j] = t;
+    try { fs.writeFileSync(ckF, JSON.stringify(ck), { mode: 0o600 }); } catch {}
     let got = 0;
     for (const [jid] of chats) {
       if (status.state !== "connected") break;
@@ -462,7 +469,13 @@ async function fetchAvatar(jid, { limit = true, win = 3600 } = {}) {
     return true;
   } catch { return false; }  // no picture / hidden by privacy: keep what we have
 }
-const toPn = j => (isLid(j) ? knownAlias.get(j) || j : j);  // avatar files are named by phone number
+// avatar files are named by phone number: map a LID (incl. my own) to its number, via our aliases or Baileys' lid store
+async function toPn(j) {
+  if (!isLid(j)) return j;
+  if (sock?.user?.lid && jidNormalizedUser(sock.user.lid) === j) return jidNormalizedUser(sock.user.id);
+  const pn = knownAlias.get(j) || await sock?.signalRepository?.lidMapping?.getPNForLID?.(j).catch(() => null);
+  return pn ? jidNormalizedUser(pn) : j;
+}
 async function ownAvatar() {
   const me = sock?.user?.id ? jidNormalizedUser(sock.user.id) : null;
   if (!me) return;
@@ -526,7 +539,7 @@ async function connect() {
       if (PAIR) { log("تم الربط. شغّل الخدمة: systemctl --user start wa-sync"); setTimeout(() => process.exit(0), 5000); return; }
       setTimeout(syncGroups, 5000);
       clearTimeout(avatarTimer);
-      avatarTimer = setTimeout(function loop() { ownAvatar().then(avatarPass).finally(() => { avatarTimer = setTimeout(loop, 24 * 3600e3); }); }, 120e3);
+      avatarTimer = setTimeout(function loop() { ownAvatar().then(avatarPass).finally(() => { avatarTimer = setTimeout(loop, 12 * 3600e3); }); }, 120e3);
       setTimeout(ownAvatar, 8000);  // now (reconnects too), then daily with the loop above
     }
     if (connection === "close") {
@@ -590,9 +603,10 @@ async function connect() {
   sock.ev.on("contacts.update", cs => cs.forEach(c => {
     contactEv(c);
     if (c?.id && (c.imgUrl === "changed" || c.imgUrl === "removed")) {  // picture notification (also fired for groups)
-      const jid = toPn(jidNormalizedUser(c.id));
-      if (c.imgUrl === "removed") W({ op: "avatar", jid, remove: 1 });
-      else fetchAvatar(jid, { win: 60 }).then(ok => ok && log(`avatar changed ${jid.split("@")[0]}`));
+      toPn(jidNormalizedUser(c.id)).then(jid => {
+        if (c.imgUrl === "removed") W({ op: "avatar", jid, remove: 1 });
+        else fetchAvatar(jid, { win: 60 }).then(ok => ok && log(`avatar changed ${jid.split("@")[0]}`));
+      });
     }
   }));
   sock.ev.on("groups.upsert", gs => gs.forEach(g => groupMeta(g, true)));

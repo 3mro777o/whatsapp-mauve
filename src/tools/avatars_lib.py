@@ -14,7 +14,7 @@ WEB = waconf.WEB
 USER = waconf.USER
 AVATARS = os.path.join(USER, "avatars")
 MAX_AVATAR = 15 * 1024 * 1024
-SIZE = 256
+SIZE = 1024  # cap only: WhatsApp's own 640px pictures are stored byte-for-byte
 
 try:
     from PIL import Image, ImageOps
@@ -207,6 +207,12 @@ def _same_picture(path, new_bytes):
         return False
 
 
+def _width(src):
+    """Pixel width of image bytes or a file path (0 if unknown)."""
+    try: return Image.open(io.BytesIO(src) if isinstance(src, bytes) else src).width
+    except Exception: return 0
+
+
 def _store(key, data):
     if not data:
         raise ValueError("empty body")
@@ -226,18 +232,23 @@ def _store(key, data):
                 rgba = im.convert("RGBA")
                 bg.paste(rgba, mask=rgba.split()[3])
                 im = bg
-            im = ImageOps.fit(im.convert("RGB"), (SIZE, SIZE), Image.LANCZOS, centering=(0.5, 0.5))
-            buf = io.BytesIO()
-            im.save(buf, "JPEG", quality=88, optimize=True)
-            out_bytes, ext = buf.getvalue(), "jpg"
+            if not (ext == "jpg" and im.width == im.height and im.width <= SIZE):  # else keep the original bytes (full quality)
+                side = min(min(im.size), SIZE)
+                im = ImageOps.fit(im.convert("RGB"), (side, side), Image.LANCZOS, centering=(0.5, 0.5))
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=92, optimize=True)
+                out_bytes, ext = buf.getvalue(), "jpg"
         except Exception as e:
             raise ValueError(f"cannot decode image: {e}")
     os.makedirs(AVATARS, exist_ok=True)
     cur = current_file(key)
     if cur:
-        if _same_picture(os.path.join(AVATARS, cur), out_bytes):  # same picture again: keep file + mtime, no history entry
-            return avatar_url(cur)
-        archive_current(key)  # a different picture: the old one goes to history first
+        if _same_picture(os.path.join(AVATARS, cur), out_bytes):  # same picture again: no history entry
+            if _width(out_bytes) <= _width(os.path.join(AVATARS, cur)):
+                return avatar_url(cur)  # keep file + mtime
+            # same picture in a higher resolution (old 256px copies): replace in place, no history
+        else:
+            archive_current(key)  # a different picture: the old one goes to history first
         _remove_key(key)  # stray duplicates with another extension
     fname = f"{key}.{ext}"
     tmp = os.path.join(AVATARS, f".{fname}.tmp")
