@@ -4,7 +4,7 @@
 image:            ## build the docker image (whatsapp-mauve:local)
 	../wa build
 test:             ## self-checks on temp dirs
-	python3 tools/test_purge.py && python3 tools/test_import.py
+	python3 tools/test_purge.py && python3 tools/test_import.py && python3 tools/updater.py
 install:          ## deps, commands, systemd user units (wa-sync at boot)
 	../legacy/setup.sh
 import:           ## import ./msgstore.db (decrypted) into archive.db

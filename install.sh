@@ -21,8 +21,16 @@ systemctl is-enabled docker >/dev/null 2>&1 || warn "docker is not enabled at bo
 mkdir -p "$HOME/.local/bin"; ln -sfn "$REPO/wa" "$HOME/.local/bin/wa"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) warn "add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;; esac
 say "wa -> ~/.local/bin/wa"
-if docker image inspect "whatsapp-mauve:local" >/dev/null 2>&1; then say "image whatsapp-mauve:local exists (wa build to rebuild)"
-else say "building the image (a few minutes)"; nice -n 19 "$REPO/wa" build; fi
+# image: the published one (ghcr.io/3mro777o/whatsapp-mauve) unless it cannot be pulled (not published/public yet) or WA_IMAGE=whatsapp-mauve:local
+# is exported: then the repo builds it locally (developer mode: updates = git pull + rebuild)
+IMG="${WA_IMAGE:-ghcr.io/3mro777o/whatsapp-mauve:latest}"; DEV=0
+if [ "$IMG" = "whatsapp-mauve:local" ]; then DEV=1
+elif docker pull "$IMG"; then say "image $IMG"
+else warn "cannot pull $IMG: building locally instead (developer mode)"; DEV=1; fi
+if [ "$DEV" = 1 ]; then
+  if docker image inspect "whatsapp-mauve:local" >/dev/null 2>&1; then say "image whatsapp-mauve:local exists (wa build to rebuild)"
+  else say "building the image (a few minutes)"; nice -n 19 "$REPO/wa" build; fi
+fi
 [ "${1:-}" = "--no-instance" ] && exit 0
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -34,6 +42,7 @@ if wa list | awk 'NR>1{print $1}' | grep -qxF "$NAME"; then echo "account '$NAME
 ask PORT "viewer port (auto = pick a free one)" "auto"
 args=(new "$NAME"); [ "$PORT" = auto ] || args+=(--port "$PORT")
 wa "${args[@]}"; DIR="$REPO/profiles/$NAME"
+[ "$DEV" = 1 ] && setc "$DIR" WA_IMAGE whatsapp-mauve:local
 
 echo
 echo "Viewer access: local = this machine only · tailscale = your tailnet · lan = local network (needs a password)"
@@ -75,5 +84,6 @@ if yn "protect the viewer with a PIN? (y/n)" n; then wa pin "$NAME" || true; fi
 if yn "link this archive as a WhatsApp device now (QR)? (y/n)" n; then wa link "$NAME"
 else echo "link later: wa link $NAME   (WhatsApp > Linked devices > Link a device)"; fi
 if command -v notify-send >/dev/null && yn "desktop notification if the link breaks? (y/n)" n; then wa notify-on "$NAME" || true; fi
+if yn "one-click updates from the viewer (new release -> 'update now')? (y/n)" n; then wa autoupdate-on "$NAME" || true; fi
 echo
 say "done: cd $REPO && docker compose up -d  (all profiles) · wa list · wa status $NAME · wa logs $NAME · wa backup $NAME <dest>"

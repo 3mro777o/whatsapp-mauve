@@ -38,6 +38,12 @@ WA_UPLOAD_MAX_MB=100              # largest file that can be uploaded for sendin
 WA_GIPHY_KEY=                     # GIPHY API key (optional). Empty = GIF and sticker search disabled. The key never reaches the browser
 WA_KLIPY_KEY=                     # KLIPY API key (optional, free from partner.klipy.com). Added to GIPHY results; if both are empty = search disabled
 
+# updates (docker). Profile wa.conf (profiles/<name>/wa.conf):
+# WA_IMAGE=                         # empty = ghcr.io/3mro777o/whatsapp-mauve:latest (published multi-arch image; `wa update` = docker compose pull + up -d)
+# WA_IMAGE=whatsapp-mauve:local     # developer mode: the compose file keeps `build: ../../src`; `wa update` = git pull --ff-only + docker compose build + up -d
+# WA_UPDATE_CHECK=1                 # 0 = the viewer never asks GitHub (api.github.com/.../releases/latest, at most every 12 h) for a new release
+# WA_AUTO_UPDATE=0                  # 1 = nightly `wa update` (installed by `wa autoupdate-on`; the viewer's "update now" button needs `wa autoupdate-on` too and a PIN)
+
 # docker instance layout (wa new writes these values; you do not need to touch them with the old install)
 # WA_MEDIA_DIR=media                # name of the media folder inside WA_STORE (default Media); it becomes the prefix of the paths in the database and in the URLs
 # WA_USER=user                      # user data folder (default WA_WEB/user)

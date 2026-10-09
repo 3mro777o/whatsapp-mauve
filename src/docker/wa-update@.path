@@ -1,0 +1,9 @@
+[Unit]
+Description=whatsapp-mauve - update request from the viewer (%i)
+
+[Path]
+# the viewer container writes this file (timestamp only) when "update now" is pressed; wa-update-request consumes it
+PathExists=@REPO@/profiles/%i/state/update-request
+
+[Install]
+WantedBy=default.target

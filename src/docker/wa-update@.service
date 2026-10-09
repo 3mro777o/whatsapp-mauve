@@ -1,0 +1,7 @@
+[Unit]
+Description=whatsapp-mauve - update (%i)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart="@REPO@/wa" update-request %i

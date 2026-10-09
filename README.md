@@ -31,7 +31,7 @@ whatsapp-mauve/
 Requirements: `docker` (with `docker compose`) and `python3`.
 
     git clone <repo> whatsapp-mauve && cd whatsapp-mauve
-    ./install.sh          # guided setup: installs `wa`, builds the image, adds an account and starts it
+    ./install.sh          # guided setup: installs `wa`, pulls the image (builds it locally if it cannot be pulled), adds an account and starts it
 
 The wizard explains the 64-digit key. Get the key from WhatsApp: **Settings > Chats > Chat backup > End-to-end encrypted backup > Use 64-digit encryption key instead**. If you lose the key: turn encryption off and on again to get a new key, then make a new backup (old backups will not open with the new key).
 
@@ -61,6 +61,8 @@ Services: `<name>-sync` (live sync, starts at boot) and `<name>-viewer` (the vie
     wa regen                                 regenerate compose.yml for all accounts
     wa notify-on|notify-off <name>           desktop notification if the link breaks
     wa migrate-legacy <old folder> <name> [--dry-run]   migrate the old install (without docker)
+    wa update [name]                         install the newest release (see Releases and updates)
+    wa autoupdate-on|autoupdate-off [name]   one-click update from the viewer (+ optional nightly update)
     wa build | wa shell <name>
 
 After editing `wa.conf` (port, `WA_VIEWER_AUTOSTART`, `WA_PHONE_DIR`) or after a restore on another machine, run `wa regen` (`wa up` does it automatically).
@@ -94,6 +96,20 @@ An external read-only library. Add this under `immich-server` in Immich's `docke
       - /path/to/whatsapp-mauve/profiles/<name>/media:/usr/src/app/external/whatsapp-<name>:ro
 
 And in Immich: *Administration > External Libraries > Create*, with Import path = `/usr/src/app/external/whatsapp-<name>`, and Exclusion patterns = `**/.Statuses/**` if you do not want statuses.
+
+## Releases and updates
+
+Every release is a multi-arch (amd64, arm64) image on GitHub Container Registry: `ghcr.io/3mro777o/whatsapp-mauve` (tags `1.0.1`, `1.0`, `latest`). By default the account compose files use `ghcr.io/3mro777o/whatsapp-mauve:latest`.
+
+- **Image mode (default):** `wa update` = `docker compose pull` + `up -d`.
+- **Developer mode:** set `WA_IMAGE=whatsapp-mauve:local` in `profiles/<name>/wa.conf`. The compose file keeps `build: ../../src`, and `wa update` = `git pull --ff-only` + `docker compose build` + `up -d`.
+- **Update notice:** the viewer asks GitHub for the latest release at most every 12 hours (`WA_UPDATE_CHECK=0` turns it off) and shows a banner "new version vX.Y.Z" with *What's new* and *Update now*. *Update now* needs a PIN; the container only writes `state/update-request` (it has no docker access). Run `wa autoupdate-on` once on the host: a systemd user path unit sees the file and runs `wa update` (log: `journalctl --user -u 'wa-update@*'`). `WA_AUTO_UPDATE=1` in `wa.conf` (then `wa autoupdate-on` again) adds a nightly `wa update`; `wa autoupdate-off` removes both.
+
+Cutting a release (maintainer): edit `src/VERSION` (e.g. `1.0.1`), commit, then
+
+    git tag v1.0.1 && git push --tags
+
+GitHub Actions (`.github/workflows/docker.yml`) builds and pushes the image and creates the GitHub Release. The tag must equal `src/VERSION`. After the first push, make the package public once: GitHub > your profile > Packages > whatsapp-mauve > Package settings > Change visibility > Public (otherwise `docker pull` needs a login).
 
 ## Changing the code and rebuilding
 

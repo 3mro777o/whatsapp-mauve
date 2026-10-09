@@ -1,6 +1,7 @@
 # allow-list: only the code goes into the image (never data, keys or sessions)
 *
 !Dockerfile
+!VERSION
 !tools
 !docker/entrypoint.sh
 **/node_modules

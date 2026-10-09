@@ -1,0 +1,10 @@
+[Unit]
+Description=whatsapp-mauve - nightly update (WA_AUTO_UPDATE=1)
+
+[Timer]
+OnCalendar=*-*-* 04:30
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

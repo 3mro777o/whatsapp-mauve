@@ -38,6 +38,10 @@ From the repo root:
 
 Or `../wa build` and then `docker compose up -d`. Each account's `compose.yml` builds from `src/` (`context: ../../src`), so any change inside `src/` needs a rebuild. Changing `profiles/` does not need a rebuild.
 
+## Releases
+
+`src/VERSION` is the app version (copied to `/app/VERSION` in the image; read by `tools/updater.py`, shown by `/api/version`, and part of the `app` version in `/api/changes`). To cut a release: bump it, commit, `git tag v<version> && git push --tags`; `.github/workflows/docker.yml` checks tag = `src/VERSION`, builds linux/amd64 + arm64 from `src/`, pushes `ghcr.io/3mro777o/whatsapp-mauve:<version>`, `:<major>.<minor>`, `:latest` and creates the GitHub Release. Make the GHCR package public once in the GitHub package settings. `tools/updater.py` (self-check: `python3 tools/updater.py`) does the 12-hour cached GitHub check (`cache/update.json`, `WA_UPDATE_CHECK=0` disables) and writes `state/update-request`; `wa update` / `wa autoupdate-on` and `src/docker/wa-update@.*` are the host side (`WA_UPDATE_DRY=1 wa update` prints instead of doing). Developer mode = `WA_IMAGE=whatsapp-mauve:local` in the profile `wa.conf`.
+
 ## Tests
 
 From `src/`:

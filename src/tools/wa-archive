@@ -10,6 +10,8 @@ JSON API (same-origin; clients limited by WA_ACCESS):
   GET    /api/people             -> {"nicknames":{"<j>":"..."},"groups":[{"id","name","color","members":["<j>"]}]}
   PUT    /api/people   {...}     -> {"ok":true}      (validated, atomic write + people.json.bak)
   POST   /api/read {chat} -> {"ok":true,"u":0}   local unread reset + best-effort markChatAsRead on WhatsApp via wa-sync /read (never a read receipt; no PIN needed beyond the gate)
+  GET    /api/version     -> {"current","latest","available":bool,"url","notes","check"}   release check (GitHub, cached 12 h, WA_UPDATE_CHECK=0 disables)
+  POST   /api/update-request -> {"ok":true}   writes state/update-request for the HOST (`wa autoupdate-on` path unit runs `wa update`); needs a PIN like sending; 409 = nothing newer
   GET    /api/changes?since=<seq> -> {"seq":n,"chats":["<chatId>",…],"v":{source: mtime string}}   ("*" = names/ids changed: reload list; "v" = stat-only versions, see live_versions)
   GET    /api/sync/status        -> {"state":"connected|connecting|disconnected|logged_out|stopped","last":ts,"pending":n,…}
   GET    /api/media/pending      -> [{"chat","chatName","key","kind","name","sz","t","expires","state","progress"}]
@@ -57,6 +59,7 @@ import viewer_lock
 if "--set-pin" in sys.argv or "--clear-pin" in sys.argv: sys.exit(viewer_lock.cli(sys.argv))
 import avatars_lib as av
 import sender
+import updater
 
 ROOT = waconf.WEB
 USER = waconf.USER
@@ -195,7 +198,8 @@ def live_versions():  # stat-only: one mtime string per source, the viewer refet
             "stickers": mt(os.path.join(U, "stickers"), os.path.join(U, "stickers", "stickers.json")),
             "gifs": mt(os.path.join(U, "gifs"), os.path.join(U, "gifs", "gifs.json")),
             "me": mt(os.path.join(waconf.STATE, "me.json")), "status": mt(STATUS_FILE),
-            "app": mt(os.path.join(waconf.TOOLS, "viewer.html"), os.path.join(waconf.TOOLS, "web-static", "sw.js"))}
+            "app": mt(os.path.join(waconf.TOOLS, "viewer.html"), os.path.join(waconf.TOOLS, "web-static", "sw.js")) + "/" + updater.current(),
+            "app_version": updater.current()}
 
 
 def wdb():
@@ -423,6 +427,10 @@ class H(http.server.SimpleHTTPRequestHandler):
             if p == "/api/purge" and method == "POST": return self._msg_action(self._purge)
             if p == "/api/me" and method == "GET": return self._me()
             if p == "/api/read" and method == "POST": return self._read()
+            if p == "/api/version" and method == "GET": return self._json(updater.info())
+            if p == "/api/update-request" and method == "POST":
+                if not self._can_send(): return
+                return self._json({"ok": True}) if updater.request() else self._err(409, "no update available")
             mm = re.fullmatch(r"/api/chatperm/([A-Za-z0-9_-]{1,64})", p)
             if mm and method == "GET": return self._run(sender.chat_perm, mm.group(1))
             if p == "/api/emoji" and method == "GET": return self._json(sender.emoji_overview())
@@ -708,6 +716,7 @@ class Server(http.server.ThreadingHTTPServer):
 bind = waconf.CONF.get("WA_BIND_OVERRIDE") or ("127.0.0.1" if ACCESS == "local" else "::")
 srv = (http.server.ThreadingHTTPServer if ":" not in bind else Server)((bind, PORT), H)
 srv.daemon_threads = True
+if updater.enabled(): updater.info()  # warms the release cache in the background
 url = f"http://127.0.0.1:{PORT}/"
 print(f"WhatsApp Archive [{ACCESS}]: {url}  (Ctrl+C للإيقاف)")
 print("  قفل الرمز: مفعّل" if viewer_lock.pin_set() else "  بدون قفل: شغّل tools/wa-archive --set-pin لتحمي العارض", flush=True)

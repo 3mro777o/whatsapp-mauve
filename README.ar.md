@@ -31,7 +31,7 @@ whatsapp-mauve/
 المتطلبات: `docker` (مع `docker compose`) و`python3`.
 
     git clone <repo> whatsapp-mauve && cd whatsapp-mauve
-    ./install.sh          # معالج عربي/إنجليزي: يثبّت `wa` ويبني الصورة ويضيف حساب ويشغّله
+    ./install.sh          # معالج عربي/إنجليزي: يثبّت `wa` وينزّل الصورة (ويبنيها محليًا إذا ما انسحبت) ويضيف حساب ويشغّله
 
 المعالج بيشرح مفتاح الـ64 رقم. المفتاح من واتساب: **الإعدادات ← الدردشات ← النسخ الاحتياطي للدردشات ← نسخ احتياطي مشفّر تمامًا ← استخدام مفتاح تشفير من 64 رقمًا**. إذا ضاع المفتاح: أوقف التشفير وفعّله من جديد لتاخد مفتاح جديد، واعمل نسخة احتياطية جديدة (النسخ القديمة ما بتنفتح بالمفتاح الجديد).
 
@@ -61,6 +61,8 @@ whatsapp-mauve/
     wa regen                                إعادة توليد compose.yml لكل الحسابات
     wa notify-on|notify-off <اسم>           إشعار سطح المكتب إذا انفك الربط
     wa migrate-legacy <مجلد قديم> <اسم> [--dry-run]   ترحيل التثبيت القديم (بدون docker)
+    wa update [اسم]                         ثبّت أحدث إصدار (شوف الإصدارات والتحديث)
+    wa autoupdate-on|autoupdate-off [اسم]   تحديث بنقرة من العارض (+ تحديث ليلي اختياري)
     wa build | wa shell <اسم>
 
 بعد تعديل `wa.conf` (منفذ، `WA_VIEWER_AUTOSTART`، `WA_PHONE_DIR`) أو بعد استعادة على جهاز تاني: `wa regen` (و`wa up` بيعملها تلقائياً).
@@ -94,6 +96,20 @@ whatsapp-mauve/
       - /path/to/whatsapp-mauve/profiles/<اسم>/media:/usr/src/app/external/whatsapp-<اسم>:ro
 
 وبـImmich: *Administration ← External Libraries ← Create*، وImport path = `/usr/src/app/external/whatsapp-<اسم>`، وExclusion patterns = `**/.Statuses/**` إذا ما بدك الحالات.
+
+## الإصدارات والتحديث
+
+كل إصدار صورة متعددة المعمارية (amd64 وarm64) على GitHub Container Registry: `ghcr.io/3mro777o/whatsapp-mauve` (الوسوم `1.0.1` و`1.0` و`latest`). افتراضيًا ملفات compose للحسابات بتستعمل `ghcr.io/3mro777o/whatsapp-mauve:latest`.
+
+- **وضع الصورة (الافتراضي):** `wa update` = `docker compose pull` ثم `up -d`.
+- **وضع المطوّر:** ضع `WA_IMAGE=whatsapp-mauve:local` بـ`profiles/<اسم>/wa.conf`. ملف compose بيبقى فيه `build: ../../src`، و`wa update` = `git pull --ff-only` ثم `docker compose build` ثم `up -d`.
+- **إشعار التحديث:** العارض بيسأل GitHub عن آخر إصدار مرة كل 12 ساعة بالأكثر (`WA_UPDATE_CHECK=0` بيطفّيه) وبيعرض شريط «نسخة جديدة vX.Y.Z» مع «ما الجديد» و«تحديث الآن». «تحديث الآن» بيحتاج PIN؛ الحاوية بس بتكتب `state/update-request` (ما إلها وصول لـdocker). شغّل `wa autoupdate-on` مرة على الجهاز: وحدة systemd (path) للمستخدم بتشوف الملف وبتشغّل `wa update` (السجل: `journalctl --user -u 'wa-update@*'`). `WA_AUTO_UPDATE=1` بـ`wa.conf` (ثم `wa autoupdate-on` من جديد) بيضيف `wa update` ليلي؛ `wa autoupdate-off` بيشيل الاثنين.
+
+إصدار نسخة جديدة (للمطوّر): عدّل `src/VERSION` (مثلاً `1.0.1`)، commit، ثم
+
+    git tag v1.0.1 && git push --tags
+
+GitHub Actions (`.github/workflows/docker.yml`) بيبني الصورة وبيرفعها وبينشئ GitHub Release. لازم يطابق الوسم `src/VERSION`. بعد أول رفع اجعل الحزمة عامة مرة وحدة: GitHub ← حسابك ← Packages ← whatsapp-mauve ← Package settings ← Change visibility ← Public (وإلا `docker pull` بيحتاج تسجيل دخول).
 
 ## تعديل الكود وإعادة البناء
 

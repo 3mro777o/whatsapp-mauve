@@ -124,6 +124,13 @@ ssh newhost 'cd ~/WhatsApp && legacy/setup.sh'                  # venv + npm + �
 - على سيرفر بدون واجهة رسومية: الخدمة بتشتغل عادي، وما في إشعارات سطح مكتب. شوف `wa-sync status` أو `/api/sync/status`.
 - لتغيير المنفذ أو الواجهة: `WA_PORT`/`WA_BIND` بـ`wa.conf`. السيرفر بيقبل طلبات الكتابة من نفس الأصل بس.
 
+## الإصدارات والتحديث
+
+- **النسخة:** `src/VERSION` (بالصورة: `/app/VERSION` + وسم `org.opencontainers.image.version`). العارض بيعرضها كـ`v.app_version` بـ`/api/changes` (وهي مدموجة بـ`v.app` فنسخة جديدة بتظهر إشعار «نسخة جديدة من التطبيق») وبـ`/api/version`.
+- **النشر:** `git tag v1.0.1 && git push --tags` بيشغّل `.github/workflows/docker.yml` (الوسم لازم يطابق `src/VERSION`): qemu + buildx، السياق `src/`، linux/amd64 + linux/arm64، بيرفع `ghcr.io/3mro777o/whatsapp-mauve:{1.0.1,1.0,latest}` مع وسوم OCI (source = هالمستودع فالحزمة بتنربط فيه) بـ`GITHUB_TOKEN` (`packages: write`)، ثم بينشئ GitHub Release. الحزمة خاصة بعد أول رفع: اجعلها عامة مرة وحدة من إعدادات الحزمة على GitHub.
+- **اختيار الصورة:** `wa` بيكتب `image:` من `WA_IMAGE` (`wa.conf` للحساب ثم البيئة، والافتراضي `ghcr.io/3mro777o/whatsapp-mauve:latest`) وبيضيف `build: ../../src` بس للوسم المحلي `whatsapp-mauve:local` (وضع المطوّر).
+- **مسار التحديث:** `tools/updater.py` بيسأل `api.github.com/repos/3mro777o/whatsapp-mauve/releases/latest` مرة كل 12 ساعة بالأكثر (مهلة 10 ثوانٍ، بدون مصادقة، الفشل صامت وبيعاد بعد ساعة؛ الكاش `cache/update.json`؛ `WA_UPDATE_CHECK=0` بيعطّله) و`/api/version` بيرجّع `{current, latest, available, url, notes}`. العارض بيعرض شريطًا قابلًا للإخفاء (النسخة المخفية بتنحفظ بـlocalStorage). «تحديث الآن» = `POST /api/update-request` (بوابة PIN + نفس الأصل، ويحتاج PIN مثل الإرسال) وهو بس بيكتب وقتًا بـ`state/update-request`: الحاوية ما إلها وصول لـdocker. على الجهاز `wa autoupdate-on` بيركّب وحدات systemd للمستخدم من `src/docker/` (`wa-update@<profile>.path` بـ`PathExists=` على الملف، وبيشغّل `wa-update@<profile>.service` = `wa update-request <profile>`: بيحذف الملف أولًا فالفشل ما بيعمل حلقة، ثم بيشغّل `wa update`). `wa update` = `docker compose pull` + `up -d` (وضع الصورة) أو `git pull --ff-only` + `build` + `up -d` (وضع المطوّر)؛ بيعيد تشغيل الخدمات الشغّالة بس. بعدها العارض بيلاحظ النسخة الجديدة عبر الإشعار/reload الموجود. `WA_AUTO_UPDATE=1` بيضيف `wa-autoupdate.timer` (تحديث ليلي). السجل: `journalctl --user -u 'wa-update@*' -u wa-autoupdate`. `WA_UPDATE_DRY=1` بيخلّي `wa update` يطبع أوامره بس.
+
 ## ملاحظات
 
 - `tools/build_viewer.py` صار قديم (بناء ثابت)، والسيرفر بيستخدم القاعدة مباشرة. بس دوال الإثراء فيه لسا مستخدمة.

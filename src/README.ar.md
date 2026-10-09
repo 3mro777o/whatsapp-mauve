@@ -38,6 +38,10 @@
 
 أو `../wa build` ثم `docker compose up -d`. الـ`compose.yml` لكل حساب بيبني من `src/` (`context: ../../src`)، فأي تعديل داخل `src/` يحتاج بناء. تعديل `profiles/` ما يحتاج بناء.
 
+## الإصدارات
+
+`src/VERSION` هو إصدار التطبيق (بيننسخ إلى `/app/VERSION` بالصورة؛ بيقراه `tools/updater.py` وبيظهر بـ`/api/version` وهو جزء من إصدار `app` بـ`/api/changes`). لإصدار نسخة: ارفع الرقم، commit، `git tag v<version> && git push --tags`؛ الـ`.github/workflows/docker.yml` بيتأكد أن الوسم = `src/VERSION`، بيبني linux/amd64 + arm64 من `src/`، بيرفع `ghcr.io/3mro777o/whatsapp-mauve:<version>` و`:<major>.<minor>` و`:latest` وبينشئ GitHub Release. اجعل حزمة GHCR عامة مرة وحدة بإعدادات الحزمة على GitHub. `tools/updater.py` (فحص ذاتي: `python3 tools/updater.py`) بيفحص GitHub مع كاش 12 ساعة (`cache/update.json`، و`WA_UPDATE_CHECK=0` بيعطّله) وبيكتب `state/update-request`؛ و`wa update` / `wa autoupdate-on` و`src/docker/wa-update@.*` هم جهة الجهاز (`WA_UPDATE_DRY=1 wa update` بيطبع بدل ما ينفّذ). وضع المطوّر = `WA_IMAGE=whatsapp-mauve:local` بـ`wa.conf` للحساب.
+
 ## الاختبارات
 
 من `src/`:
