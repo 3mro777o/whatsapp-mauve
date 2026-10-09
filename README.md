@@ -122,3 +122,11 @@ For details (code map, tests, where config keys are documented) see [src/README.
 ## legacy/
 
 The old direct install on the machine without Docker (`legacy/setup.sh`, and systemd templates). It is not maintained and is kept for reference only. Docker is the recommended way to run this.
+
+## License
+
+[AGPL-3.0](LICENSE). You may use, modify and self-host it freely. If you distribute it, or run a modified version as a service for others, you must publish your changes under the same license. For a **commercial license** (other terms), contact the owner via GitHub ([@3mro777o](https://github.com/3mro777o)). Contributions require agreeing to the [CLA](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Disclaimer
+
+This project is **not affiliated with, endorsed by, or connected to WhatsApp or Meta**. It uses an unofficial client library ([Baileys](https://github.com/WhiskeySockets/Baileys)) to link as a device. That may break at any time, and it may violate WhatsApp's Terms of Service. Use it only with your own account and data, at your own risk. Keep your archive safe: it contains your private messages, your session and your backup key.
