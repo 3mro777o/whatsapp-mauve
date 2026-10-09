@@ -3,16 +3,16 @@
 # WA_HOME defaults to the directory containing this file.
 
 # viewer (wa-archive)
-# قفل الرمز: src/tools/wa-archive --set-pin (يلغيه --clear-pin). الرمز ما بينحفظ هون، بيتخزّن مشفّر بـ state/viewer-pin
-# WA_ACCESS: من وين بتقدر تفتح العارض
-#   local      = هالجهاز بس (http://127.0.0.1:8777)
-#   tailscale  = هالجهاز + كل أجهزتك على Tailscale (http://<اسم-الجهاز>.ts.net:8777)
-#   lan        = + الشبكة المحلية (الواي فاي) — لازم WA_PASSWORD
+# PIN lock: src/tools/wa-archive --set-pin (--clear-pin removes it). The PIN is not stored here; it is kept encrypted in state/viewer-pin
+# WA_ACCESS: where the viewer can be opened from
+#   local      = this machine only (http://127.0.0.1:8777)
+#   tailscale  = this machine + all your devices on Tailscale (http://<device-name>.ts.net:8777)
+#   lan        = + the local network (Wi-Fi); WA_PASSWORD is required
 WA_ACCESS=local
-WA_PASSWORD=                      # اختياري: كلمة سر لأي جهاز غير هالجهاز (المستخدم: wa)
-WA_VIEWER_AUTOSTART=0             # 1 = العارض يشتغل مع الإقلاع (مفيد مع tailscale لتفتحه من برّا)
+WA_PASSWORD=                      # optional: password for any device other than this one (user: wa)
+WA_VIEWER_AUTOSTART=0             # 1 = the viewer starts at boot (useful with tailscale to open it from outside)
 WA_PORT=8777
-WA_SESSION_DAYS=30                # كم يوم بيضل تسجيل الدخول للعارض محفوظ (بعد رمز القفل) قبل ما يطلب الرمز من جديد
+WA_SESSION_DAYS=30                # how many days the viewer login stays saved (after the PIN) before the PIN is asked again
 
 # data locations
 WA_DB=archive/archive.db          # single source of truth (SQLite, WAL)
@@ -29,17 +29,17 @@ WA_MEDIA_MAX_MB=200               # auto-download limit per file; bigger files c
 WA_DOWNLOAD_STATUS=1              # download status (stories) media
 WA_DEFAULT_CC=90                  # default country code for numbers starting with 0
 WA_PYTHON=python3                 # interpreter for the archive writer / enrich (needs Pillow for avatars)
-WA_SYSTEM_THEME=~/.local/state/omarchy/current/theme/colors.toml   # ألوان ثيم النظام (Omarchy) للواجهة؛ فاضي = معطّل
+WA_SYSTEM_THEME=~/.local/state/omarchy/current/theme/colors.toml   # system theme colors (Omarchy) for the UI; empty = disabled
 
-# إرسال من العارض (الرسائل والملفات والملصقات و GIF)
-# الإرسال بيمشي عبر wa-sync على 127.0.0.1 بس، ومحمي بـ state/api-token. ومتاح بس مع رمز القفل أو WA_ACCESS=local
-WA_SYNC_PORT=8778                 # منفذ خدمة الإرسال في wa-sync (127.0.0.1 بس)
-WA_UPLOAD_MAX_MB=100              # أكبر ملف بيتم رفعه للإرسال (ميغابايت)
-WA_GIPHY_KEY=                     # مفتاح GIPHY API (اختياري). فاضي = البحث عن GIF والملصقات معطّل. المفتاح ما بيوصل للمتصفح
-WA_KLIPY_KEY=                     # مفتاح KLIPY API (اختياري، مجاني من partner.klipy.com). يضاف لنتائج GIPHY؛ لو الاثنين فاضيين = البحث معطّل
+# Sending from the viewer (messages, files, stickers, and GIFs)
+# Sending goes through wa-sync on 127.0.0.1 only, and is protected by state/api-token. It is available only with the PIN lock or WA_ACCESS=local
+WA_SYNC_PORT=8778                 # port of the sending service in wa-sync (127.0.0.1 only)
+WA_UPLOAD_MAX_MB=100              # largest file that can be uploaded for sending (MB)
+WA_GIPHY_KEY=                     # GIPHY API key (optional). Empty = GIF and sticker search disabled. The key never reaches the browser
+WA_KLIPY_KEY=                     # KLIPY API key (optional, free from partner.klipy.com). Added to GIPHY results; if both are empty = search disabled
 
-# docker instance layout (wa new بيكتب هالقيم، وما لازم تلمسها بالتثبيت القديم)
-# WA_MEDIA_DIR=media                # اسم مجلد الوسائط داخل WA_STORE (الافتراضي Media)؛ بيصير بادئة المسارات بالقاعدة وبالرابط
-# WA_USER=user                      # مجلد بيانات المستخدم (الافتراضي WA_WEB/user)
-# WA_PHONE_DIR=/path/to/WhatsApp    # مجلد واتساب من التلفون: بيحدد WA_PHONE_MEDIA=<>/Media و WA_BACKUPS=<>/Databases
-# WA_TS_HTTPS=8443                  # (docker) منفذ https لـ tailscale serve على الجهاز
+# docker instance layout (wa new writes these values; you do not need to touch them with the old install)
+# WA_MEDIA_DIR=media                # name of the media folder inside WA_STORE (default Media); it becomes the prefix of the paths in the database and in the URLs
+# WA_USER=user                      # user data folder (default WA_WEB/user)
+# WA_PHONE_DIR=/path/to/WhatsApp    # WhatsApp folder from the phone: sets WA_PHONE_MEDIA=<>/Media and WA_BACKUPS=<>/Databases
+# WA_TS_HTTPS=8443                  # (docker) https port for tailscale serve on the machine

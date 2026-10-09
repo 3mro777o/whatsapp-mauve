@@ -281,7 +281,7 @@ PY
     done ;;
   key)
     d="$(pdir "${1:?name}")"
-    read -rsp "64-digit backup key / مفتاح النسخ الاحتياطي (64 خانة): " k; echo
+    read -rsp "64-digit backup key: " k; echo
     k="${k//[[:space:]]/}"; [[ "$k" =~ ^[0-9A-Fa-f]{64}$ ]] || die "the key must be exactly 64 hex digits (0-9, a-f); nothing saved"
     (umask 077; printf '%s\n' "$k" > "$d/.wa_key"); chmod 600 "$d/.wa_key"; say "key saved ($d/.wa_key, mode 600)" ;;
   import)
@@ -347,7 +347,7 @@ PY
     case "$s" in connected|starting|connecting) rm -f "$mark"; exit 0 ;; esac
     [ "$(cat "$mark" 2>/dev/null)" = "$s" ] && exit 0; echo "$s" > "$mark"
     notify-send -a "WhatsApp Archive" -u critical -i dialog-warning "WhatsApp Archive: $1" \
-      "المزامنة مش شغّالة / sync is not running ($s). wa status $1 ; wa link $1" 2>/dev/null || true ;;
+      "sync is not running ($s). wa status $1 ; wa link $1" 2>/dev/null || true ;;
   notify-on)
     n="${1:?name}"; pdir "$n" >/dev/null; u="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; mkdir -p "$u"
     cp "$REPO"/src/docker/wa-notify@.service "$REPO"/src/docker/wa-notify@.timer "$u/"

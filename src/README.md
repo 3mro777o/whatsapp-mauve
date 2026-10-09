@@ -1,59 +1,59 @@
-# whatsapp-mauve: دليل المطوّر / Developer guide
+**English** | [العربية](README.ar.md)
 
-كل الكود هنا. المشروع يشتغل داخل صورة Docker وحدة (`whatsapp-mauve:local`) والبيانات بـ`profiles/` بالجذر (ما بتدخل الصورة).
-The whole codebase lives here. It runs in one Docker image; the data lives in `../profiles/` and is mounted at `/data`, never copied into the image.
+# whatsapp-mauve: developer guide
 
-## خريطة الكود / Code map
+All the code lives here. The project runs in a single Docker image (`whatsapp-mauve:local`). The data lives in `profiles/` at the repo root and is never copied into the image.
 
-| الملف | الوظيفة / What it does |
+## Code map
+
+| File | What it does |
 |---|---|
-| `tools/wa-archive` | سيرفر العارض والـAPI على `127.0.0.1:8777`، وقفل PIN. يخدم `viewer.html` مباشرة |
-| `tools/viewer.html` | واجهة واحدة (شكل واتساب ويب). تعديلها ما بيحتاج بناء، بس الحاوية لازم تتحدّث |
-| `tools/viewer_data.py` | قراءة `archive.db` للعارض (المحادثات، الرسائل، الوسائط) |
-| `tools/viewer_lock.py` | قفل PIN وتوكن محلي للأدوات الخلفية (`state/api-token`) |
-| `tools/wa-sync/sync.mjs` | المزامنة الحيّة: جهاز مرتبط عبر Baileys، والإرسال، وإشارات القراءة |
-| `tools/wa-sync/patch-baileys.mjs` | تعديل صغير على Baileys بعد `npm ci` |
-| `tools/archive_writer.py` + `archive_db.py` + `schema.sql` | الكاتب الوحيد للقاعدة وقواعد الدمج (ما في حذف، النسخ القديمة محفوظة) |
-| `tools/import_msgstore.py` | `wa import`: فكّ تشفير `msgstore*.crypt15` ودمجه، وربط `Media/` |
-| `tools/sender.py` | الإرسال والملصقات والـGIF (GIPHY وKLIPY) والرفع، من خلف `wa-archive` |
-| `tools/avatars_lib.py`، `import_avatars.py`، `avatar-fetcher/fetch.mjs` | صور المحادثات (الاستيراد بالجملة، والجلب من واتساب) |
-| `tools/enrich.py`، `build_viewer.py`، `build_index.py`، `dedupe_library.py`، `build_emoji.py` | إثراء (صور معاينة، موجات الصوت) وبناء ثابت قديم وأدوات صيانة |
-| `tools/waconf.py` | يقرأ `wa.conf` ويحسب كل المسارات من `WA_HOME` |
-| `tools/web-static/`، `tools/fonts/`، `tools/login.html` | ملفات ثابتة للواجهة |
-| `tools/make_fake_phone.py`، `test_import.py`، `test_purge.py` | الاختبارات (انظر أدناه) |
-| `docker/entrypoint.sh` | نقطة دخول الحاوية: `sync \| viewer \| link \| import \| pin \| clearpin \| shell` |
-| `docker/wa-notify@.service`، `.timer` | تنبيه سطح المكتب عند انفكاك الربط (يركّبها `wa notify-on`) |
-| `Dockerfile`، `.dockerignore` | الصورة. الـcontext هو `src/`، والـallow-list بتسمح بس بالكود |
-| `Makefile` | أهداف للتطوير: `make test` وغيرها |
-| `docs/ARCHITECTURE.md` | البنية والقرارات (بالعربي) |
+| `tools/wa-archive` | Viewer server and API on `127.0.0.1:8777`, plus the PIN lock. Serves `viewer.html` directly |
+| `tools/viewer.html` | Single-file UI (looks like WhatsApp Web). Editing it needs no build, but the container must be updated |
+| `tools/viewer_data.py` | Reads `archive.db` for the viewer (chats, messages, media) |
+| `tools/viewer_lock.py` | PIN lock and a local token for background tools (`state/api-token`) |
+| `tools/wa-sync/sync.mjs` | Live sync: a linked device via Baileys, sending, and read signals |
+| `tools/wa-sync/patch-baileys.mjs` | Small patch to Baileys after `npm ci` |
+| `tools/archive_writer.py` + `archive_db.py` + `schema.sql` | The only writer to the database, and the merge rules (nothing is deleted, old versions are kept) |
+| `tools/import_msgstore.py` | `wa import`: decrypts `msgstore*.crypt15`, merges it, and links `Media/` |
+| `tools/sender.py` | Sending, stickers, GIFs (GIPHY and KLIPY), and uploads, behind `wa-archive` |
+| `tools/avatars_lib.py`, `import_avatars.py`, `avatar-fetcher/fetch.mjs` | Chat avatars (bulk import, and fetching from WhatsApp) |
+| `tools/enrich.py`, `build_viewer.py`, `build_index.py`, `dedupe_library.py`, `build_emoji.py` | Enrichment (preview images, voice-note waveforms), an old static build, and maintenance tools |
+| `tools/waconf.py` | Reads `wa.conf` and computes all paths from `WA_HOME` |
+| `tools/web-static/`, `tools/fonts/`, `tools/login.html` | Static files for the UI |
+| `tools/make_fake_phone.py`, `test_import.py`, `test_purge.py` | Tests (see below) |
+| `docker/entrypoint.sh` | Container entry point: `sync \| viewer \| link \| import \| pin \| clearpin \| shell` |
+| `docker/wa-notify@.service`, `.timer` | Desktop notification when the link breaks (installed by `wa notify-on`) |
+| `Dockerfile`, `.dockerignore` | The image. The build context is `src/`, and the allow-list only admits code |
+| `Makefile` | Development targets: `make test` and others |
+| `docs/ARCHITECTURE.md` | Architecture and design decisions (Arabic version: `ARCHITECTURE.ar.md`) |
 
-ملاحظة: داخل الصورة الكود بـ`/app/tools` (`WORKDIR /app`)، والمسار الثابت هو `WA_HOME=/data`.
+Note: inside the image the code is at `/app/tools` (`WORKDIR /app`), and the fixed path is `WA_HOME=/data`.
 
-## إعادة البناء / Rebuild
+## Rebuild
 
-من جذر المشروع:
+From the repo root:
 
     docker compose build && docker compose up -d
 
-أو `../wa build` ثم `docker compose up -d`. الـ`compose.yml` لكل حساب بيبني من `src/` (`context: ../../src`)، فأي تعديل داخل `src/` يحتاج بناء. تعديل `profiles/` ما يحتاج بناء.
+Or `../wa build` and then `docker compose up -d`. Each account's `compose.yml` builds from `src/` (`context: ../../src`), so any change inside `src/` needs a rebuild. Changing `profiles/` does not need a rebuild.
 
-## الاختبارات / Tests
+## Tests
 
-من `src/`:
+From `src/`:
 
-    make test                      # test_purge.py + test_import.py (بملفات مؤقتة، ما بتلمس البيانات)
-    python3 tools/sender.py        # self-check للإرسال والـGIF
-    python3 tools/viewer_lock.py   # self-check للقفل (ما بيلمس ملفات)
+    make test                      # test_purge.py + test_import.py (temporary files, never touches your data)
+    python3 tools/sender.py        # self-check for sending and GIFs
+    python3 tools/viewer_lock.py   # self-check for the lock (touches no files)
 
-الاختبارات بتشتغل على الجهاز (مش داخل الحاوية) وبتستعمل مجلدات مؤقتة.
+The tests run on the host (not inside the container) and use temporary folders.
 
-## الإعدادات / Config keys
+## Config keys
 
-كل المفاتيح موثّقة في `../wa.conf.example` (النسخة الحقيقية لكل حساب: `profiles/<اسم>/wa.conf`). الأسماء والقيم الافتراضية بالكود في `tools/waconf.py` (`DEFAULTS`). القيم من البيئة (`WA_*`) بتغلب على الملف.
-Every key is documented in `../wa.conf.example`; the defaults live in `tools/waconf.py` (`DEFAULTS`). Environment variables override the file.
+Every key is documented in `../wa.conf.example` (the real per-account copy is `profiles/<name>/wa.conf`). The names and default values are in the code, in `tools/waconf.py` (`DEFAULTS`). Values from the environment (`WA_*`) override the file.
 
-## ملاحظات / Notes
+## Notes
 
-- المسارات داخل الكود نسبية لمكانه: إذا نقلت ملف، عدّل عدد مستويات `dirname` في أوله (مثلاً `waconf.py`، `sync.mjs`، `wa-search`).
-- `wa` بالجذر (مش هنا) وبيبني من `src/`. `install.sh` و`compose.yml` بالجذر.
-- التثبيت القديم بدون docker في `../legacy/`، وهو غير مصان.
+- Paths in the code are relative to where the file is: if you move a file, change the number of `dirname` levels at its top (for example in `waconf.py`, `sync.mjs`, `wa-search`).
+- `wa` lives at the root (not here) and builds from `src/`. `install.sh` and `compose.yml` are at the root too.
+- The old install without Docker is in `../legacy/`, and it is not maintained.

@@ -1,154 +1,155 @@
-# WhatsApp Archive — البنية
+**English** | [العربية](ARCHITECTURE.ar.md)
 
-> **ملاحظة المسارات:** المسارات `tools/…` و`docker/…` و`docs/…` هنا نسبةً لمجلد `src/`. `wa`، `install.sh`، `compose.yml`، و`profiles/` بالجذر. الأوامر التالية تشتغل من `src/`: `make test`، أو `python3 tools/test_import.py`.
+# WhatsApp Archive: architecture
 
-أرشيف تراكمي لواتساب: كل نسخة احتياطية من التلفون وكل رسالة بتوصل لايف بتنضاف لقاعدة بيانات وحدة، وما بينمسح منها شي أبداً.
+> **Path note:** the paths `tools/…`, `docker/…`, and `docs/…` here are relative to the `src/` folder. `wa`, `install.sh`, `compose.yml`, and `profiles/` are at the root. The following commands run from `src/`: `make test`, or `python3 tools/test_import.py`.
+
+A cumulative WhatsApp archive: every backup taken from the phone and every message that arrives live is added to one database, and nothing is ever deleted from it.
 
 ```
- التلفون ──(نسخة crypt15)──► Databases/ ──► wa-import (import_msgstore.py) ──┐
- التلفون ──(مجلد Media)────► Media/ ──hardlink──► archive/store/Media/          │
- واتساب ──(جهاز مرتبط)────► wa-sync (Node/Baileys) ──JSON lines──► archive_writer.py ─┤
+ Phone ──(crypt15 backup)──► Databases/ ──► wa-import (import_msgstore.py) ──┐
+ Phone ──(Media folder)────► Media/ ──hardlink──► archive/store/Media/          │
+ WhatsApp ──(linked device)► wa-sync (Node/Baileys) ──JSON lines──► archive_writer.py ─┤
                                                                                ▼
                                                     archive/archive.db  (SQLite WAL)
                                                                                │
-                              wa-archive (سيرفر محلي، عند الطلب) ◄──────────────┘
-                              يولّد /data/*.json من القاعدة + API + الواجهة tools/viewer.html
+                              wa-archive (local server, on demand) ◄────────────┘
+                              generates /data/*.json from the database + API + the UI tools/viewer.html
 ```
 
-## المكوّنات
+## Components
 
-| المكوّن | الملف | الوظيفة |
+| Component | File | Role |
 |---|---|---|
-| الإعدادات | `wa.conf` (نسخة: `wa.conf.example`) | كل المسارات والحدود. المسارات النسبية نسبةً لمجلد المشروع (`WA_HOME`) |
-| Docker | `src/Dockerfile`, `src/docker/`, `compose.yml` (مولَّد)، `wa`, `install.sh` | صورة وحدة `whatsapp-mauve:local` + أمر `wa` لعدة حسابات (`profiles/<name>/`) (شوف "Docker وتعدد الحسابات") |
-| القاعدة | `archive/archive.db`, `tools/schema.sql` | المصدر الوحيد للحقيقة |
-| منطق الدمج | `tools/archive_db.py` | قواعد الكتابة (ما في حذف، حفظ النسخ القديمة، الرسائل المحذوفة بتضل بمحتواها) |
-| مستورد النسخ | `tools/import_msgstore.py` (`wa-import`) | فكّ تشفير `msgstore*.crypt15` بالمفتاح ودمجها، وربط ملفات `Media/` بالمخزن |
-| المزامنة الحيّة | `tools/wa-sync/sync.mjs` (`wa-sync`) | جهاز مرتبط "مخفي": ما بيبعت رسائل ولا إشعارات قراءة، وحالته `unavailable` |
-| الكاتب | `tools/archive_writer.py` | بيستقبل أحداث wa-sync ويكتبها بالقاعدة بنفس منطق الدمج، وبيمرّر طلبات التحميل من العارض |
-| الإثراء | `tools/enrich.py` | صور معاينة للفيديو وPDF، وموجات الرسائل الصوتية (`archive/web/thumbs/`) |
-| العارض | `tools/wa-archive`, `tools/viewer_data.py`, `tools/viewer.html` | سيرفر على 127.0.0.1:8777، ما بيشتغل مع الإقلاع |
-| التنبيهات | `tools/wa-sync-check` | إشعار سطح المكتب إذا انفك الربط أو وقفت الخدمة، عند كل تسجيل دخول |
+| Settings | `wa.conf` (template: `wa.conf.example`) | All paths and limits. Relative paths are relative to the project folder (`WA_HOME`) |
+| Docker | `src/Dockerfile`, `src/docker/`, `compose.yml` (generated), `wa`, `install.sh` | The single image `whatsapp-mauve:local` + the `wa` command for several accounts (`profiles/<name>/`) (see "Docker and multiple accounts") |
+| Database | `archive/archive.db`, `tools/schema.sql` | The only source of truth |
+| Merge logic | `tools/archive_db.py` | The write rules (nothing is deleted, old versions are kept, deleted messages keep their content) |
+| Backup importer | `tools/import_msgstore.py` (`wa-import`) | Decrypts `msgstore*.crypt15` with the key and merges it, and links the `Media/` files to the store |
+| Live sync | `tools/wa-sync/sync.mjs` (`wa-sync`) | A "hidden" linked device: it sends no messages and no read receipts, and its state is `unavailable` |
+| Writer | `tools/archive_writer.py` | Receives wa-sync events and writes them to the database with the same merge logic, and passes download requests from the viewer along |
+| Enrichment | `tools/enrich.py` | Preview images for videos and PDFs, and voice-note waveforms (`archive/web/thumbs/`) |
+| Viewer | `tools/wa-archive`, `tools/viewer_data.py`, `tools/viewer.html` | Server on 127.0.0.1:8777, which does not start at boot |
+| Alerts | `tools/wa-sync-check` | Desktop notification if the link breaks or the service stops, at every login |
 
-## قاعدة البيانات (`archive.db`)
+## Database (`archive.db`)
 
-- `chats`: المعرّف الثابت = الجزء الأول من الـjid (رقم الهاتف، أو `120363…` للمجموعات والقنوات، أو `status`). الـ`@lid` بيتحوّل لرقم الهاتف لما يكون معروف (`aliases`)، فالشخص الواحد إله محادثة وحدة. إذا تغيّر معرّف محادثة (lid صار رقم) بينحفظ بـ`chat_renames`، والعارض بيحوّل المعرّف القديم تلقائياً.
-- `messages`: مفتاحها `(chat_id, key_id, from_me)`. فيها الحالة الحالية، وحقول العرض الإضافية بـ`data` (JSON).
-- `message_versions`: كل نص أو تعليق قديم مع وقته. `revocations`: وقت الحذف ومين حذف. `reactions`, `group_members` (الأعضاء الحاليين والقدام)، `contacts` (الأسماء من دفتر العناوين، أو الاسم اللي حطّه الشخص لحاله).
-- `media`: حالة تحميل كل ملف من المزامنة الحيّة، مع مفاتيح التحميل (mediaKey/directPath) لحتى يقدر ينحمّل لاحقاً.
-- `jobs`: طلبات التحميل من العارض. `changes`: سجل التغييرات اللي بيعتمد عليه التحديث الحي بالواجهة.
+- `chats`: the stable ID is the first part of the JID (the phone number, or `120363…` for groups and channels, or `status`). A `@lid` is converted to the phone number when it is known (`aliases`), so one person has one chat. If a chat ID changes (a LID becomes a number), the change is saved in `chat_renames`, and the viewer converts the old ID automatically.
+- `messages`: keyed by `(chat_id, key_id, from_me)`. It holds the current state and extra display fields in `data` (JSON).
+- `message_versions`: every older text or caption with its time. `revocations`: the deletion time and who deleted it. `reactions`, `group_members` (current and past members), `contacts` (names from the address book, or the name the person set for themselves).
+- `media`: the download state of each file from live sync, with the download keys (mediaKey/directPath) so it can be downloaded later.
+- `jobs`: download requests from the viewer. `changes`: the change log that the live update in the UI depends on.
 
-## قواعد الدمج
+## Merge rules
 
-1. ما في شي بينمسح. كل نسخة احتياطية جديدة بتضيف وبتحدّث بس.
-2. رسالة صارت "محذوفة" (نوع 15 أو REVOKE) بتضل بمحتواها الأخير المعروف، وبينسجّل وقت الحذف ومين حذفها. الواجهة بتاخد `"del":{"t","by"}`.
-3. إذا تغيّر النص بينحفظ القديم بـ`message_versions` (`"ed":[[ts,text],…]`). نسخة احتياطية أقدم ما بتكتب فوق نص أحدث، نصها بينحفظ كتاريخ بس.
-4. نسخة احتياطية أقدم فيها محتوى رسالة كانت معروفة إنها محذوفة بس → المحتوى بيرجع.
-5. الوسائط: أي ملف من `Media/` بينربط (hardlink) بـ`archive/store/Media/`، فحذفه من التلفون أو من مجلد المزامنة ما بيضيّعه. التحميلات الحيّة بتروح لـ`archive/store/Media/live/YYYY-MM/`.
+1. Nothing is ever deleted. Each new backup only adds and updates.
+2. A message that became "deleted" (type 15 or REVOKE) keeps its last known content, and the deletion time and who deleted it are recorded. The UI reads it from `"del":{"t","by"}`.
+3. When the text changes, the old one is saved in `message_versions` (`"ed":[[ts,text],…]`). An older backup never overwrites a newer text: its text is saved as history only.
+4. An older backup that contains the content of a message that was known to be deleted → the content comes back.
+5. Media: any file in `Media/` is linked (hardlink) to `archive/store/Media/`, so deleting it from the phone or from the sync folder does not lose it. Live downloads go to `archive/store/Media/live/YYYY-MM/`.
 
-## المزامنة الحيّة (wa-sync)
+## Live sync (wa-sync)
 
-- خدمة systemd للمستخدم (`wa-sync.service`) بتشتغل مع الإقلاع حتى بدون تسجيل دخول (linger)، و`Restart=always`، وبأولوية منخفضة (Nice/CPUWeight/IO idle) وحد للذاكرة.
-- بتستخدم جلسة الجهاز المرتبط بـ`state/auth`. ما بتمسحها أبداً حتى لو انفك الربط.
-- التحميل التلقائي للوسائط لحد `WA_MEDIA_MAX_MB` (الافتراضي 200MB). الأكبر منه بيروح لقائمة انتظار (`/api/media/pending`) مع إشعار، وبينحمّل لما تطلبه من الواجهة طالما لسا موجود على سيرفرات واتساب. وسائط "تاريخ المحادثات" بتنحفظ مفاتيحها بس (`remote`) وبتنحمّل عند الطلب.
-- بتكتب حالتها بـ`state/status.json`: `connecting`, `connected`, `disconnected`, `logged_out`, `stopped`, `failed`. وفي نبضة كل 30 ثانية.
-- `wa-sync-check.service` بيشتغل مع كل تسجيل دخول للواجهة الرسومية، وبيبعت إشعار إذا في مشكلة. الخدمة نفسها كمان بتبعت إشعار فوري إذا في session bus.
+- A user-level systemd service (`wa-sync.service`) that runs at boot even without a login (linger), with `Restart=always`, low priority (Nice/CPUWeight/IO idle), and a memory limit.
+- It uses the linked-device session in `state/auth`. It never deletes it, even if the link breaks.
+- Automatic media download up to `WA_MEDIA_MAX_MB` (default 200MB). Anything bigger goes to a waiting list (`/api/media/pending`) with a notification, and it is downloaded when you request it from the UI, as long as it is still on WhatsApp's servers. Media from "chat history" only has its keys saved (`remote`) and is downloaded on request.
+- It writes its state to `state/status.json`: `connecting`, `connected`, `disconnected`, `logged_out`, `stopped`, `failed`. A heartbeat is written every 30 seconds.
+- `wa-sync-check.service` runs at every graphical login and sends a notification if there is a problem. The service itself also sends an immediate notification when there is a session bus.
 
-أوامر: `wa-sync status | logs | restart | stop | pair` (`pair` بيوقف الخدمة وبيعرض QR وبعدين بيرجّعها).
+Commands: `wa-sync status | logs | restart | stop | pair` (`pair` stops the service, shows the QR code, and then starts it again).
 
-### التعديلات والرسائل للعرض مرة وحدة
-- **التعديلات** بتوصل هلق كـ`secretEncryptedMessage` (AES-GCM بدون AAD). المفتاح هو
-  `HKDF-SHA256(messageSecret الرسالة الأصلية, salt=بلا, info = id الأصلية + jid كاتبها + jid المعدِّل + "Message Edit")`.
-  عشان هيك `wa-sync` بيحفظ الـ`messageSecret` لكل رسالة بتوصل بـ`state/msg-secrets.jsonl` (JSONL بس بينضاف عليه، صلاحيات 600):
-  `{"k": key_id, "s": base64 secret, "a": jid الكاتب}`.
-- الرسائل الأقدم من المزامنة بتاخد أسرارها من النسخ الاحتياطية: `import_msgstore.py` مع كل استيراد بيضيف الناقص من جدول
-  `message_secret` (كاتب رسائلك هو `WA_ME` بـ`wa.conf`، أو `me` من `status.json`، وإذا ما انعرف بيتجاهلها)،
-  وبعدين بيبعت `SIGHUP` لـ`wa-sync` لحتى يعيد قراءة الملف بدون ما يعيد تشغيل (`kill -HUP <pid>` بيعمل نفس الشي يدوياً).
-- **الرسائل للعرض مرة وحدة:** Baileys بيرمي الـstanza `unavailable` من نوع `view_once` اللي بتوصل للأجهزة المرتبطة،
-  فـ`wa-sync` بيلتقطها من الـstanza الخام وبيسجّل مكانها رسالة `sys2` ("📷 رسالة للعرض مرة واحدة"). المحتوى نفسه ما بيوصل لجهاز مرتبط أصلاً.
+### Edits and view-once messages
+- **Edits** now arrive as `secretEncryptedMessage` (AES-GCM without AAD). The key is
+  `HKDF-SHA256(messageSecret of the original message, salt=none, info = original id + author jid + editor jid + "Message Edit")`.
+  That is why `wa-sync` saves the `messageSecret` of every incoming message to `state/msg-secrets.jsonl` (JSONL, append only, mode 600):
+  `{"k": key_id, "s": base64 secret, "a": author jid}`.
+- Older messages from the sync take their secrets from the backups: with every import, `import_msgstore.py` adds the missing ones from the `message_secret` table (the author of your messages is `WA_ME` in `wa.conf`, or `me` from `status.json`; if that is unknown, they are skipped),
+  and then sends `SIGHUP` to `wa-sync` so it re-reads the file without restarting (`kill -HUP <pid>` does the same thing manually).
+- **View-once messages:** Baileys throws the `unavailable` stanza of type `view_once` that reaches linked devices,
+  so `wa-sync` catches it from the raw stanza and records a `sys2` message in its place ("📷 view-once message"). The content itself never reaches a linked device at all.
 
-## الوصول عن بعد (HTTPS عبر Tailscale)
-- `tailscale serve --bg 8777` بيعرض العارض على `https://<جهازك>.<tailnet>.ts.net`، بس للأجهزة اللي جوّا الـtailnet.
-- ⚠️ الطلبات اللي بتجي عبر `tailscale serve` بتوصل للسيرفر من `127.0.0.1`، فبتتعامل كأنها محلية، و`WA_PASSWORD` ما بينطبق عليها.
-  الحماية هون هي صلاحيات الـtailnet بس، فلا تعمل `tailscale funnel` (عام عالإنترنت).
-- للإيقاف: `tailscale serve --https=443 off` (أو `tailscale serve reset`).
+## Remote access (HTTPS via Tailscale)
+- `tailscale serve --bg 8777` shows the viewer at `https://<your-device>.<tailnet>.ts.net`, only for devices inside the tailnet.
+- ⚠️ Requests that arrive through `tailscale serve` reach the server from `127.0.0.1`, so they are treated as local, and `WA_PASSWORD` does not apply to them.
+  The only protection here is the tailnet permissions, so do not run `tailscale funnel` (which is public on the internet).
+- To stop: `tailscale serve --https=443 off` (or `tailscale serve reset`).
 
-## واجهة العارض (API)
+## Viewer interface (API)
 
-- `/data/chats.json`, `/data/c/<id>.json`, `/data/search.json`, `/data/media.json`, `/data/people.json`: بتتولّد من القاعدة مع cache بالذاكرة، و`ETag` و`Cache-Control: no-cache`.
-- `GET /api/changes?since=<seq>` بيرجّع `{"seq","chats":[…]}`. لو رجعت `"*"` يعني تغيّرت الأسماء أو المعرّفات، فلازم تنعاد قائمة المحادثات كلها.
-- `GET /api/sync/status`، `GET /api/media/pending`، `POST /api/media/fetch/<chatId>/<keyId>`، `POST /api/media/skip/<chatId>/<keyId>`، `GET /api/members/<chatId>`.
-- بيانات المستخدم (`archive/web/user/`): العلامات، والألقاب والمجموعات، والصور. ما بتنمسح أبداً.
+- `/data/chats.json`, `/data/c/<id>.json`, `/data/search.json`, `/data/media.json`, `/data/people.json`: generated from the database with an in-memory cache, and `ETag` and `Cache-Control: no-cache`.
+- `GET /api/changes?since=<seq>` returns `{"seq","chats":[…]}`. If it returns `"*"`, the names or IDs changed, so the whole chat list must be reloaded.
+- `GET /api/sync/status`, `GET /api/media/pending`, `POST /api/media/fetch/<chatId>/<keyId>`, `POST /api/media/skip/<chatId>/<keyId>`, `GET /api/members/<chatId>`.
+- User data (`archive/web/user/`): labels, nicknames and groups, and pictures. It is never deleted.
 
-## Docker وتعدد الحسابات
+## Docker and multiple accounts
 
-جذر المشروع = **whatsapp-mauve**. صورة وحدة (`whatsapp-mauve:local`، من `src/Dockerfile`) + أمر `wa` (bash بالجذر، بيتركّب بـ`~/.local/bin` عبر `install.sh`، وبيحلّ مكان المشروع بـ`readlink -f` فبيشتغل عبر الرابط). كل حساب = مجلد (profile) تحت `profiles/` فيه كل شي. مجلد `profiles/` هو السجل: الحساب = مجلد فيه `wa.conf` (ما في `~/.config`). `profiles/` مستثنى من git، والصورة بتتبنى من `src/` بس (`src/.dockerignore`) فما بتدخل البيانات.
+Project root = **whatsapp-mauve**. One image (`whatsapp-mauve:local`, from `src/Dockerfile`) + the `wa` command (a bash script at the root, installed into `~/.local/bin` by `install.sh`, which resolves the project location with `readlink -f` so it works through the link). Each account = a folder (profile) under `profiles/` that contains everything. The `profiles/` folder is the registry: an account is a folder with a `wa.conf` (nothing in `~/.config`). `profiles/` is excluded from git, and the image is built from `src/` only (`src/.dockerignore`), so the data never enters it.
 
 ```
-profiles/<name>/wa.conf      إعدادات الحساب كلها: المنفذ، WA_ACCESS، WA_PASSWORD، WA_TS_HTTPS، WA_PHONE_DIR، WA_VIEWER_AUTOSTART
-                 compose.yml مولَّد من wa.conf بأمر wa (لا تعدّله)
-                 archive.db  قاعدة البيانات (SQLite WAL)
-                 media/      وسائط بأسماء واتساب (WhatsApp Images/, WhatsApp Voice Notes/<yyyyww>/, .Statuses/ …)
-                 state/      جلسة واتساب (auth/)، status.json، api-token، رمز القفل، contacts.vcf
-                 user/       بيانات المستخدم (صور المحادثات، ملصقات/GIF المحفوظة، ألقاب، علامات)
-                 cache/      يُعاد توليده (web/data, thumbs): ما بيدخل بالنسخ الاحتياطي
-                 .wa_key     مفتاح الـ64 رقم (600)
+profiles/<name>/wa.conf      all account settings: port, WA_ACCESS, WA_PASSWORD, WA_TS_HTTPS, WA_PHONE_DIR, WA_VIEWER_AUTOSTART
+                 compose.yml generated from wa.conf by the wa command (do not edit)
+                 archive.db  the database (SQLite WAL)
+                 media/      media with WhatsApp names (WhatsApp Images/, WhatsApp Voice Notes/<yyyyww>/, .Statuses/ …)
+                 state/      WhatsApp session (auth/), status.json, api-token, the PIN lock, contacts.vcf
+                 user/       user data (chat pictures, saved stickers/GIFs, nicknames, labels)
+                 cache/      regenerated (web/data, thumbs): not included in backups
+                 .wa_key     the 64-digit key (600)
 ```
 
-- **التشغيل:** `compose.yml` بالجذر (`name: whatsapp-mauve`) فيه `include:` لكل `profiles/<name>/compose.yml` (بالصيغة الطويلة مع `required: false` فنسخة جديدة بدون حسابات ما بتنكسر). `docker compose up -d` بالجذر بيشغّل كل الحسابات، و`docker compose up -d <name>-sync` أو `<name>-viewer` بيشغّل خدمة وحدة. كل `profiles/<name>/compose.yml` بيولّده `wa` من `wa.conf`: خدمتين `<name>-sync` (`restart: unless-stopped`، بتشتغل مع docker عند الإقلاع) و`<name>-viewer` (restart حسب `WA_VIEWER_AUTOSTART`)، الصورة `whatsapp-mauve:local` مع `build:` (السياق = جذر المشروع) فـ`docker compose up` بيبنيها إذا ناقصة. `network_mode: host` (نفس سلوك loopback/tailscale serve)، المنافذ من `wa.conf`، و`user: uid:gid` للمستخدم الحالي مثبّت وقت التوليد. المجلد نفسه بيتركّب على `/data` (`WA_HOME`) بمسار نسبي (`.:/data`)، ومجلد التلفون على `/phone` للقراءة فقط إذا `WA_PHONE_DIR` محدد. حدود: `cap_drop: ALL`، `no-new-privileges`، `init`، ذاكرة 1GB وأولوية CPU واطية.
-- **`wa regen`:** بيعيد توليد كل compose بالحسابات + قائمة `include` بالجذر. لازم بعد الاستعادة على جهاز تاني (uid مختلف) أو بعد تعديل `wa.conf` يدوياً؛ `wa up` و`wa import` و`wa link` و`wa pin` بيعملوه تلقائياً.
-- **المسارات:** `waconf.py` بيحلّ كل شي نسبةً لـ`WA_HOME`. مفاتيح: `WA_MEDIA_DIR` (اسم مجلد الوسائط ببادئة المسارات بالقاعدة وبالرابط؛ الافتراضي `Media` للتثبيت القديم، `media` بالـprofile)، `WA_USER`، `WA_PHONE_DIR` (بيحدد `WA_PHONE_MEDIA=<>/Media` و`WA_BACKUPS=<>/Databases`). الـprofile بيحط `WA_STORE=.`، و`wa-archive` بيعمل روابط `cache/web/user` و`cache/web/media`. التثبيت القديم (`archive/store/Media`, `archive/web/user`) ما تغيّر.
-- **الاستيراد (`wa import`):** (1) على الجهاز نفسه: `import_msgstore.py --mirror-only` بيربط (hardlink، أو نسخ إذا قرص تاني) مجلد `Media/` بالتلفون إلى `media/`، ويتجاهل: `.Links .Wamo .wamocache .udDH* "WhatsApp Bug Report Attachments" .nomedia`، وبيحتفظ بـ`.Statuses` و`WhatsApp AI Media` والملصقات. السبب: الحاويات ما بتقدر تعمل hardlink عبر نقاط تركيب مختلفة. (2) بالحاوية (`docker compose run <name>-sync import`): فك تشفير أحدث `Databases/msgstore*.crypt15` بالمفتاح ودمجها بالقاعدة. بدون مفتاح أو بمفتاح غلط (مش 64 خانة hex) أو ملف تالف: رسالة واضحة وبدون تعطيل شي. مسارات الوسائط بالقاعدة بتاخد بادئة `WA_MEDIA_DIR`.
-- **التحميلات اللايف:** `sync.mjs` بينزّلها بمجلد واتساب المطابق: `WhatsApp Images/` (+`Sent/` للمرسَل)، `WhatsApp Video/`، `WhatsApp Animated Gifs/`، `WhatsApp Voice Notes/<yyyyww>/`، `WhatsApp Audio/`، `WhatsApp Documents/`، `WhatsApp Stickers/`، `.Statuses/`، بأسماء `IMG-yyyymmdd-WA<معرّف>.ext`. المسارات القديمة `media/live/...` بتنقرا عادي (القاعدة بتخزّن المسار نسبياً).
-- **ترحيل التثبيت القديم:** `wa migrate-legacy <legacy_dir> <name> [--dry-run]`. بيرفض إذا `wa-sync` (systemd) شغّال أو المنفذين (من `wa.conf` القديم) مشغولين، أو إذا المجلد القديم على قرص غير قرص المشروع (لأنه بيستعمل `mv`). بينقل: `archive/archive.db(+wal/shm)` → `archive.db`، `archive/store/Media/*` → `media/`، `archive/web/user/*` → `user/`، `state/*` (عدا `handoff*`، اللوجات، النسخ القديمة) → `state/`، `.wa_key`، `contacts.vcf` → `state/`، وبيبني `wa.conf` جديد مع الإعدادات المحفوظة (`WA_ACCESS WA_PORT WA_SYNC_PORT WA_PASSWORD WA_GIPHY_KEY WA_MEDIA_MAX_MB …`) ومسارات نسبية. بالقاعدة بيستبدل `Media/` بـ`media/` بكل مكان بينخزّن فيه مسار: `media.path`، و`messages.data` (`m`، وبيعاد حساب `p` = `thumbs/sha1(m).jpg` لأن اسم الصورة المصغّرة هاش المسار فبتنقل بالاسم الجديد)، و`jobs.result`. صلاحيات: `state` 700 والأسرار 600. `--dry-run` بيطبع كل خطوة وعدد الصفوف بدون تغيير.
-- **الإشعار على الجهاز (اختياري):** `wa notify-on <name>` بيركّب `wa-notify@<name>.timer` (كل 10 دقايق، `wa notify` بيقرأ `state/status.json` وبيرسل إشعار مرة وحدة لكل حالة).
-- **Tailscale:** `WA_TS_HTTPS=<port>` بـ`wa.conf` → `wa up` بيشغّل `tailscale serve --bg --https=<port> http://127.0.0.1:<WA_PORT>` و`wa down` بيلغيه.
-- **النسخ الاحتياطي:** `wa backup <name> <dest>` بينسخ المجلد (rsync -aH أو tar) بدون `cache/` و`compose.yml`، والقاعدة عبر `sqlite3 backup` (متّسقة والخدمة شغّالة). الاستعادة: `wa restore <dest>/<name> [--move]` (بينسخ/ينقل لـ`profiles/<name>` ثم `wa regen`).
-- **الاختبارات:** `python3 tools/test_import.py` (استيراد مجلد تلفون وهمي + msgstore صناعي بملفات مؤقتة، وفحص أخطاء المفتاح)، و`tools/test_purge.py`.
+- **Running:** the `compose.yml` at the root (`name: whatsapp-mauve`) has an `include:` for each `profiles/<name>/compose.yml` (in long form with `required: false`, so a new copy without accounts does not break). `docker compose up -d` at the root starts all accounts, and `docker compose up -d <name>-sync` or `<name>-viewer` starts a single service. Each `profiles/<name>/compose.yml` is generated by `wa` from `wa.conf`: two services, `<name>-sync` (`restart: unless-stopped`, starts with docker at boot) and `<name>-viewer` (restart depends on `WA_VIEWER_AUTOSTART`), the image `whatsapp-mauve:local` with `build:` (context = project root), so `docker compose up` builds it if it is missing. `network_mode: host` (the same behavior as loopback and `tailscale serve`), ports from `wa.conf`, and `user: uid:gid` for the current user, fixed at generation time. The folder itself is mounted at `/data` (`WA_HOME`) with a relative path (`.:/data`), and the phone folder is mounted read-only at `/phone` if `WA_PHONE_DIR` is set. Limits: `cap_drop: ALL`, `no-new-privileges`, `init`, 1GB memory, and low CPU priority.
+- **`wa regen`:** regenerates every account's compose file and the `include` list at the root. It must be run after a restore on another machine (different uid) or after editing `wa.conf` by hand; `wa up`, `wa import`, `wa link`, and `wa pin` do it automatically.
+- **Paths:** `waconf.py` resolves everything relative to `WA_HOME`. Keys: `WA_MEDIA_DIR` (the name of the media folder, used as a prefix in the database paths and in the URLs; the default is `Media` for the old install and `media` in a profile), `WA_USER`, and `WA_PHONE_DIR` (sets `WA_PHONE_MEDIA=<>/Media` and `WA_BACKUPS=<>/Databases`). The profile sets `WA_STORE=.`, and `wa-archive` creates the links `cache/web/user` and `cache/web/media`. The old install (`archive/store/Media`, `archive/web/user`) did not change.
+- **Import (`wa import`):** (1) on the machine itself: `import_msgstore.py --mirror-only` links (hardlink, or copy if the disk is different) the phone's `Media/` folder into `media/`, and ignores `.Links .Wamo .wamocache .udDH* "WhatsApp Bug Report Attachments" .nomedia`, while keeping `.Statuses`, `WhatsApp AI Media`, and stickers. The reason: containers cannot make hardlinks across different mount points. (2) Inside the container (`docker compose run <name>-sync import`): decrypts the newest `Databases/msgstore*.crypt15` with the key and merges it into the database. Without a key, with a wrong key (not 64 hex digits), or with a damaged file: a clear message and nothing else is broken. The media paths in the database get the `WA_MEDIA_DIR` prefix.
+- **Live downloads:** `sync.mjs` saves them into the matching WhatsApp folder: `WhatsApp Images/` (+`Sent/` for sent ones), `WhatsApp Video/`, `WhatsApp Animated Gifs/`, `WhatsApp Voice Notes/<yyyyww>/`, `WhatsApp Audio/`, `WhatsApp Documents/`, `WhatsApp Stickers/`, `.Statuses/`, with names like `IMG-yyyymmdd-WA<id>.ext`. The old paths `media/live/...` still work (the database stores paths relative to the root).
+- **Migrating an old install:** `wa migrate-legacy <legacy_dir> <name> [--dry-run]`. It refuses if `wa-sync` (systemd) is running, if the ports (from the old `wa.conf`) are busy, or if the old folder is on a different disk from the project (because it uses `mv`). It moves: `archive/archive.db(+wal/shm)` → `archive.db`, `archive/store/Media/*` → `media/`, `archive/web/user/*` → `user/`, `state/*` (except `handoff*`, logs, and old copies) → `state/`, `.wa_key`, `contacts.vcf` → `state/`, and it builds a new `wa.conf` with the saved settings (`WA_ACCESS WA_PORT WA_SYNC_PORT WA_PASSWORD WA_GIPHY_KEY WA_MEDIA_MAX_MB …`) and relative paths. In the database it replaces `Media/` with `media/` everywhere a path is stored: `media.path`, `messages.data` (`m`, and it recalculates `p` = `thumbs/sha1(m).jpg`, because the thumbnail name is the hash of the path, so it moves with the new name), and `jobs.result`. Permissions: `state` 700 and the secrets 600. `--dry-run` prints every step and the number of rows without changing anything.
+- **Desktop notification (optional):** `wa notify-on <name>` installs `wa-notify@<name>.timer` (every 10 minutes; `wa notify` reads `state/status.json` and sends one notification per state).
+- **Tailscale:** `WA_TS_HTTPS=<port>` in `wa.conf` → `wa up` runs `tailscale serve --bg --https=<port> http://127.0.0.1:<WA_PORT>`, and `wa down` cancels it.
+- **Backup:** `wa backup <name> <dest>` copies the folder (rsync -aH or tar) without `cache/` and `compose.yml`, and the database through `sqlite3 backup` (consistent even while the service is running). Restore: `wa restore <dest>/<name> [--move]` (copies or moves into `profiles/<name>`, then `wa regen`).
+- **Tests:** `python3 tools/test_import.py` (imports a fake phone folder and a synthetic msgstore with temporary files, and checks the key errors), and `tools/test_purge.py`.
 
-### ربط `media/` مع Immich
-مكتبة خارجية للقراءة فقط: mount لـ`profiles/<name>/media` على `/usr/src/app/external/whatsapp-<name>:ro` بحاوية `immich-server`، وبعدها *Administration ← External Libraries* مع Import path نفسه (Exclusion: `**/.Statuses/**` إذا ما بدك الحالات). الأسماء مطابقة لواتساب فبتقدر كمان تنسخ المجلد للتلفون كما هو.
+### Linking `media/` with Immich
+An external read-only library: mount `profiles/<name>/media` at `/usr/src/app/external/whatsapp-<name>:ro` in the `immich-server` container, and then *Administration > External Libraries* with the same Import path (Exclusion: `**/.Statuses/**` if you do not want statuses). The names match WhatsApp's, so you can also copy the folder to the phone as it is.
 
-## النقل لجهاز أو سيرفر تاني (التثبيت القديم بدون docker)
+## Moving to another machine or server (old install without docker)
 
 ```bash
-rsync -aH --info=progress2 WhatsApp/ newhost:~/WhatsApp/   # -H بيحافظ على الروابط بين Media/ والمخزن
-ssh newhost 'cd ~/WhatsApp && legacy/setup.sh'                  # venv + npm + الأوامر + خدمات systemd + linger
+rsync -aH --info=progress2 WhatsApp/ newhost:~/WhatsApp/   # -H keeps the links between Media/ and the store
+ssh newhost 'cd ~/WhatsApp && legacy/setup.sh'                  # venv + npm + commands + systemd services + linger
 ```
 
-- ما في أي مسار ثابت بالكود. كلشي محسوب من مجلد المشروع، أو من `wa.conf`، أو من `WA_HOME` إذا كان معرّف بالبيئة.
-- `legacy/setup.sh` بيكتب ملفات الخدمات من القوالب بـ`legacy/systemd/*.in` بالمسارات الصح للجهاز الجديد (node, python, المجلد).
-- الجلسة (`state/auth`) بتنتقل مع المجلد، وما لازم تشغّل نسختين بنفس الوقت بنفس الجلسة. إذا بدك تربط جهاز جديد بدل النقل: `wa-sync pair`.
-- على سيرفر بدون واجهة رسومية: الخدمة بتشتغل عادي، وما في إشعارات سطح مكتب. شوف `wa-sync status` أو `/api/sync/status`.
-- لتغيير المنفذ أو الواجهة: `WA_PORT`/`WA_BIND` بـ`wa.conf`. السيرفر بيقبل طلبات الكتابة من نفس الأصل بس.
+- There is no fixed path in the code. Everything is computed from the project folder, from `wa.conf`, or from `WA_HOME` if it is set in the environment.
+- `legacy/setup.sh` writes the service files from the templates in `legacy/systemd/*.in`, with the correct paths for the new machine (node, python, the folder).
+- The session (`state/auth`) moves with the folder, and you must not run two copies at the same time with the same session. If you want to link a new device instead of moving: `wa-sync pair`.
+- On a server without a graphical interface: the service works normally, and there are no desktop notifications. See `wa-sync status` or `/api/sync/status`.
+- To change the port or the interface: `WA_PORT`/`WA_BIND` in `wa.conf`. The server only accepts write requests from the same origin.
 
-## ملاحظات
+## Notes
 
-- `tools/build_viewer.py` صار قديم (بناء ثابت)، والسيرفر بيستخدم القاعدة مباشرة. بس دوال الإثراء فيه لسا مستخدمة.
-- `wa-fetch-avatars` ما بيشتغل وwa-sync شغّال لأنهم بيستخدموا نفس الجلسة. wa-sync نفسه بيجيب الصور الناقصة مرة باليوم.
-- الحالات الشخصية (status) ما بتنحفظ بالنسخ الاحتياطية، فبتتسجّل بس من المزامنة الحيّة.
+- `tools/build_viewer.py` is now old (a static build), and the server uses the database directly. Only its enrichment functions are still used.
+- `wa-fetch-avatars` does not work while wa-sync is running, because they use the same session. wa-sync itself fetches the missing pictures once a day.
+- Personal statuses are not saved in backups, so they are only recorded from the live sync.
 
-## الوصول للعارض (WA_ACCESS)
-| القيمة | مين بيقدر يفتح العارض |
+## Viewer access (WA_ACCESS)
+| Value | Who can open the viewer |
 |---|---|
-| `local` | هالجهاز بس (الربط على 127.0.0.1) |
-| `tailscale` | هالجهاز + عناوين Tailscale (`100.64.0.0/10`، `fd7a:115c:a1e0::/48`). باقي العناوين بترجع 403 |
-| `lan` | كمان الشبكات الخاصة، وهون `WA_PASSWORD` إجباري |
+| `local` | This machine only (the binding is on 127.0.0.1) |
+| `tailscale` | This machine plus Tailscale addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Other addresses get 403 |
+| `lan` | Also the private networks, and here `WA_PASSWORD` is required |
 
-- `WA_PASSWORD` بيفعّل Basic Auth باسم المستخدم `wa` لأي جهاز غير هالجهاز.
-- الـ API بيقبل الكتابة بس من نفس المصدر، يعني `Origin` لازم يطابق `Host`.
-- `WA_VIEWER_AUTOSTART=1` + `legacy/setup.sh` بيفعّلوا `wa-archive.service` مع الإقلاع.
-- مع ufw: `sudo ufw allow in on tailscale0 to any port 8777 proto tcp`.
+- `WA_PASSWORD` enables Basic Auth with the user name `wa` for any device other than this machine.
+- The API accepts writes only from the same source, meaning `Origin` must match `Host`.
+- `WA_VIEWER_AUTOSTART=1` + `legacy/setup.sh` enable `wa-archive.service` at boot.
+- With ufw: `sudo ufw allow in on tailscale0 to any port 8777 proto tcp`.
 
-## قفل العارض بالرمز
+## Viewer PIN lock
 
-- `tools/wa-archive --set-pin` بيطلب الرمز مرتين (4 أحرف على الأقل)، و`--clear-pin` بيلغيه. الرمز بيتخزّن بـ scrypt مع salt بـ`state/viewer-pin` (صلاحيات 600). بدون الملف العارض بيشتغل زي قبل.
-- مع الرمز، كل المسارات (الصفحة، `/data`، `/api`، الوسائط، PWA) بتحتاج كوكي `wa_s` (HttpOnly، SameSite=Strict، مدتها `WA_SESSION_DAYS`). بدون كوكي: `/` بتروح لـ`/login`، والباقي بيرجع 401. `/login` و`POST /api/login` و`POST /api/logout` مفتوحين.
-- الجلسات مخزّنة كـ hash بـ`state/viewer-sessions.json`، فإعادة تشغيل السيرفر ما بتطلّع أحد. تغيير الرمز أو إلغاؤه بيطلّع كل الجلسات.
-- بعد 5 محاولات غلط متتالية: قفل 30 ثانية، يتضاعف لحد ساعة. العدّ لكل جهاز (من `X-Forwarded-For` عند `tailscale serve`) وكمان للكل مع بعض.
-- الأدوات الخلفية (`tools/avatar-fetcher/fetch.mjs`) بتقرأ `state/api-token` وبتبعته بالهيدر `X-WA-Token`، فما بتحتاج كوكي. wa-sync والمستوردات بتكتب بالقاعدة مباشرة، ما بتستخدم HTTP.
-- الـService worker (`wa-shell-v4`) ما بيخزّن صفحة الدخول ولا أي رد 401/302.
-- كل رد فيه `X-Frame-Options: DENY` و`frame-ancestors 'none'` و`nosniff` و`Referrer-Policy: no-referrer`، فالعارض ما ينفتح داخل iframe. صفحة `/login` عندها CSP صارم (`default-src 'none'`، inline script/style، `connect-src 'self'`).
-- الوسائط والمصغّرات `private, max-age=86400`، و`/data` بـ`private, no-cache` (الكاش بالمتصفح بس، مش عند أي وسيط).
-- `GET /api/lock` بيرجّع `{"pin": bool}`. زر "🔒 قفل الآن" بقائمة ⋮ يظهر لو فيه رمز، ويعمل `POST /api/logout` ويرجّع لـ`/login`. أي 401 "login required" من الواجهة بيرجّع لـ`/login` تلقائياً.
-- معاينة الـPDF بتتحمّل كـblob (مش iframe على رابط السيرفر)، لأن `DENY` بيمنع الـiframe على نفس الأصل.
+- `tools/wa-archive --set-pin` asks for the PIN twice (at least 4 characters), and `--clear-pin` removes it. The PIN is stored with scrypt and a salt in `state/viewer-pin` (mode 600). Without the file, the viewer works as before.
+- With a PIN, all paths (the page, `/data`, `/api`, media, PWA) require the `wa_s` cookie (HttpOnly, SameSite=Strict, lasting `WA_SESSION_DAYS`). Without the cookie: `/` redirects to `/login`, and the rest returns 401. `/login`, `POST /api/login`, and `POST /api/logout` are open.
+- Sessions are stored as hashes in `state/viewer-sessions.json`, so restarting the server does not log anyone out. Changing or removing the PIN logs out all sessions.
+- After 5 wrong attempts in a row: a 30-second lock, which doubles up to one hour. The count is per device (taken from `X-Forwarded-For` behind `tailscale serve`) and also global.
+- Background tools (`tools/avatar-fetcher/fetch.mjs`) read `state/api-token` and send it in the `X-WA-Token` header, so they do not need a cookie. wa-sync and the importers write to the database directly and do not use HTTP.
+- The service worker (`wa-shell-v4`) does not cache the login page or any 401/302 response.
+- Every response includes `X-Frame-Options: DENY`, `frame-ancestors 'none'`, `nosniff`, and `Referrer-Policy: no-referrer`, so the viewer cannot be opened inside an iframe. The `/login` page has a strict CSP (`default-src 'none'`, inline script/style, `connect-src 'self'`).
+- Media and thumbnails use `private, max-age=86400`, and `/data` uses `private, no-cache` (cached in the browser only, never by any intermediary).
+- `GET /api/lock` returns `{"pin": bool}`. The "🔒 Lock now" button in the ⋮ menu appears when a PIN is set, and it runs `POST /api/logout` and returns to `/login`. Any 401 "login required" from the UI redirects to `/login` automatically.
+- PDF previews are loaded as a blob (not as an iframe pointing at the server URL), because `DENY` blocks iframes on the same origin.
