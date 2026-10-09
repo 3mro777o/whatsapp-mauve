@@ -81,8 +81,8 @@ You can copy `media/` to your phone or open it with any program. The account tha
 
 ## Backup and restore
 
-    wa backup 3mro777o /mnt/backup         # creates /mnt/backup/3mro777o (the database through sqlite backup, hardlinks preserved)
-    wa restore /mnt/backup/3mro777o        # on any machine with docker and install.sh (copies into profiles/, then wa regen)
+    wa backup myname /mnt/backup         # creates /mnt/backup/myname (the database through sqlite backup, hardlinks preserved)
+    wa restore /mnt/backup/myname        # on any machine with docker and install.sh (copies into profiles/, then wa regen)
 
 The backup includes the session (`state/auth`), the encryption key (`.wa_key`), and all messages: store it somewhere private. Do not run a restored copy while the original is running on the same session at the same time.
 

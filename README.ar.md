@@ -81,8 +81,8 @@ whatsapp-mauve/
 
 ## النسخ الاحتياطي والاستعادة
 
-    wa backup 3mro777o /mnt/backup         # بيعمل /mnt/backup/3mro777o (القاعدة عبر sqlite backup، والـhardlinks محفوظة)
-    wa restore /mnt/backup/3mro777o        # على أي جهاز عليه docker وinstall.sh (ينسخ لـprofiles/ ثم wa regen)
+    wa backup myname /mnt/backup         # بيعمل /mnt/backup/myname (القاعدة عبر sqlite backup، والـhardlinks محفوظة)
+    wa restore /mnt/backup/myname        # على أي جهاز عليه docker وinstall.sh (ينسخ لـprofiles/ ثم wa regen)
 
 النسخة فيها الجلسة (`state/auth`) ومفتاح التشفير (`.wa_key`) وكل الرسائل: خزّنها بمكان خاص. ما تشغّل نسخة مستعادة والأصل شغّال على نفس الجلسة بنفس الوقت.
 
